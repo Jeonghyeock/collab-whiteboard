@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t collab-whiteboard .
+      - name: 컨테이너가 뜨고 /healthz가 응답하는지 확인
+        run: |
+          docker run -d --name app -p 3000:3000 collab-whiteboard
+          for i in $(seq 1 20); do curl -fs http://localhost:3000/healthz && exit 0; sleep 1; done
+          docker logs app
+          exit 1
