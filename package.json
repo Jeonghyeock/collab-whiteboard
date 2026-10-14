@@ -1,7 +1,7 @@
 {
   "name": "collab-whiteboard",
   "version": "1.0.0",
-  "description": "WebSocket 기반 실시간 협업 화이트보드 — 서버 권위 동기화, 낙관적 업데이트, 재접속 복구",
+  "description": "WebSocket 기반 실시간 협업 화이트보드 — 동시 편집, 끊겨도 이어지는 동기화, 내 작업만 실행 취소",
   "private": true,
   "type": "module",
   "license": "MIT",
