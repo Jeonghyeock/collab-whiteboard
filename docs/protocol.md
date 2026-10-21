@@ -34,11 +34,11 @@
 
 | 방향 | 메시지 | 의미 |
 | --- | --- | --- |
-| C → S | `hello { roomId, clientId, lastSeq, epoch, user }` | 접속. `lastSeq`는 마지막으로 확정받은 seq, `epoch`는 그 seq를 받은 방의 epoch(처음이면 둘 다 `null`) |
+| C → S | `hello { roomId, clientSecret, lastSeq, epoch, user }` | 접속. `clientSecret`은 이 페이지만 아는 비밀 키, `lastSeq`는 마지막으로 확정받은 seq, `epoch`는 그 seq를 받은 방의 epoch(처음이면 둘 다 `null`) |
 | C → S | `mutate { clientSeq, ops }` | 변경 묶음. `clientSeq`는 클라이언트별 단조 증가 번호(멱등 키) |
 | C → S | `presence { user, cursor, selection }` | 커서와 선택 영역. 저장하지 않음. `selection`은 방에 있는 도형 id만 남겨 전달 |
 | C → S | `ping` | 연결 확인 |
-| S → C | `welcome { seq, epoch, lastClientSeq, sync, peers }` | 접속 응답. `sync`는 놓친 커밋 목록 또는 전체 스냅샷. `epoch`는 서버가 방을 메모리에 올릴 때마다 새로 정하는 값 |
+| S → C | `welcome { clientId, seq, epoch, lastClientSeq, sync, peers }` | 접속 응답. `clientId`는 서버가 `clientSecret`으로 만든 내 공개 id, `sync`는 놓친 커밋 목록 또는 전체 스냅샷. `epoch`는 서버가 방을 메모리에 올릴 때마다 새로 정하는 값 |
 | S → C | `commit { seq, clientId, clientSeq, ops }` | 서버가 순서를 확정한 변경. **보낸 사람에게도** 보냄 |
 | S → C | `reject { clientSeq, reason }` | 서버가 거부한 변경. 보낸 사람에게만 보냄 |
 | S → C | `presence`, `leave` | 다른 사람의 커서/선택, 퇴장 |
@@ -131,7 +131,9 @@ sequenceDiagram
 
 중복 반영이 왜 위험한가: `update`는 값을 덮어쓰는 연산이라 한 번 더 적용해도 같아 보이지만, **그 사이에 다른 사람이 같은 속성을 바꿨다면** 오래된 값이 최신 값을 덮어씁니다. 통합 테스트 `서버가 처리했지만 응답을 못 받은 변경을 재전송해도 한 번만 반영된다`가 정확히 이 상황을 재현합니다.
 
-`clientId`는 페이지를 열 때마다 새로 만듭니다(탭을 복제해도 겹치지 않도록 저장소에 두지 않음). 재접속해도 같은 페이지 안에서는 유지됩니다.
+`clientSecret`은 페이지를 열 때마다 새로 만듭니다(탭을 복제해도 겹치지 않도록 저장소에 두지 않음). 재접속해도 같은 페이지 안에서는 유지됩니다.
+
+서버는 `clientSecret`을 다른 사람에게 보내지 않고, 그 해시로 만든 공개 id(`clientId`)를 `commit`, `presence`, `welcome.peers`에 씁니다. 중복 제거 기록과 연결 교체도 이 공개 id 기준입니다. 공개 id에서 비밀 키를 알아낼 수 없으므로, 남의 id를 보고 그 사람인 척 들어와 연결을 끊거나 아주 큰 `clientSeq`를 보내 그 사람의 이후 변경이 모두 중복으로 버려지게 만들 수 없습니다.
 
 ### 죽은 연결 감지
 
@@ -156,7 +158,8 @@ sequenceDiagram
 | 오래 끊겨서 놓친 커밋이 로그에서 밀려남 | 전체 스냅샷 후 대기 변경을 다시 얹음 | Room 단위 |
 | 서버 재시작 | 1초 간격 파일 저장 + 종료 시 저장. 클라이언트는 자동 재접속하고, epoch가 바뀌었으므로 스냅샷을 받음 | 통합 |
 | 비정상 종료로 잃은 커밋의 seq가 다시 쓰임 | epoch가 다르므로 증분 대신 스냅샷 | Room 단위 |
-| 반쯤 끊긴 이전 연결이 남아 있음 | 같은 `clientId`로 새로 들어오면 이전 연결을 닫음(코드 4000) | Room 단위 |
+| 반쯤 끊긴 이전 연결이 남아 있음 | 같은 `clientSecret`으로 새로 들어오면 이전 연결을 닫음(코드 4000) | Room 단위 |
+| 남의 공개 id로 들어옴 | 비밀 키가 달라 다른 클라이언트로 취급. 그 사람의 연결과 중복 제거 기록은 그대로 | Room 단위 |
 | 스키마에 안 맞는 메시지 | 연결 종료(1007/1008) | 서버 |
 | 도형 타입에 없는 속성 수정, 도형 수 초과 | `reject` → 보낸 사람 화면 롤백 | 통합, Room 단위 |
 | 방 저장 파일 손상 | 그 연결만 닫고(1011) 서버는 계속 동작 | 서버 |

@@ -7,7 +7,7 @@ import { LIMITS } from './limits.ts';
 // 밑줄을 허용하지 않아 '__proto__' 같은 키가 도형 id로 들어오는 것을 막는다.
 export const ShapeIdSchema = z.string().regex(/^[A-Za-z0-9]{8,40}$/);
 export const RoomIdSchema = z.string().regex(/^[A-Za-z0-9]{6,40}$/);
-export const ClientIdSchema = z.string().regex(/^[A-Za-z0-9]{8,40}$/);
+export const ClientSecretSchema = z.string().regex(/^[A-Za-z0-9]{16,64}$/);
 
 const Coord = z.number().min(-1e6).max(1e6);
 const Size = z.number().min(0).max(1e6);
@@ -105,7 +105,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('hello'),
     roomId: RoomIdSchema,
-    clientId: ClientIdSchema,
+    // 이 페이지만 아는 비밀 키. 서버는 여기서 공개 id를 만들어 쓰고, 키 자체는 다른 사람에게 보내지 않는다.
+    clientSecret: ClientSecretSchema,
     // 마지막으로 확정받은 seq. 처음 접속이면 null → 서버가 전체 스냅샷을 보낸다.
     lastSeq: z.number().int().min(0).nullable(),
     // lastSeq를 받았던 방의 epoch(welcome에서 받음). 없거나 지금 방과 다르면 서버가 전체 스냅샷을 보낸다.
@@ -155,6 +156,8 @@ export type Commit = {
 export type ServerMessage =
   | {
       type: 'welcome';
+      // 서버가 clientSecret으로 만든 내 공개 id. commit.clientId와 비교해 내 변경의 확인을 알아본다.
+      clientId: string;
       seq: number;
       // 방을 메모리에 올릴 때마다 새로 정하는 값. seq는 같은 epoch 안에서만 비교할 수 있다.
       epoch: string;

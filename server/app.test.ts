@@ -62,7 +62,7 @@ function rawUpgrade(target: string): Promise<void> {
 const hello = (roomId: string) => ({
   type: 'hello',
   roomId,
-  clientId: 'clientAAAA',
+  clientSecret: 'clientSecretAAAAAAAA',
   lastSeq: null,
   user: { name: 'tester', color: '#123456' },
 });
