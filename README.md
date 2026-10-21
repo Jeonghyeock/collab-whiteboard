@@ -47,6 +47,7 @@ npm start
 | 환경 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `PORT` | `3000` | 서버 포트 |
+| `HOST` | 모든 네트워크 인터페이스 | 서버가 연결을 받을 주소(`127.0.0.1`이면 이 컴퓨터에서만 접속 가능) |
 | `DATA_DIR` | `./data` | 보드 저장 폴더 |
 
 ```bash
@@ -64,20 +65,16 @@ docker run -p 3000:3000 -v whiteboard-data:/data collab-whiteboard
 
 ## 구조
 
-```mermaid
-flowchart LR
-    subgraph Browser["브라우저 (여러 개)"]
-        UI["Board / Canvas<br/>(React + SVG)"] -->|"history.apply(ops)"| H[History<br/>실행 취소]
-        H -->|"mutate(ops)"| SC[SyncClient<br/>confirmed + pending]
-        SC -->|"상태 구독"| UI
-    end
-    SC <-->|"WebSocket<br/>JSON 메시지"| R
-    subgraph Server["Node 서버 (하나)"]
-        R[Room<br/>seq 부여 · 검증 · 방송] --> F[(rooms/*.json)]
-    end
-    Shared["shared/<br/>프로토콜 스키마 + reducer"] -.-> SC
-    Shared -.-> R
-```
+### 변경 하나가 지나가는 길
+
+1. **Board · Canvas** (`client/src/board/`): 마우스·키보드 입력을 도형 변경(op)으로 만듭니다. 화면은 React + SVG로 그립니다.
+2. **History** (`client/src/sync/History.ts`): 실행 취소를 위해 바뀐 도형의 변경 전/후 모습을 기록하고, op를 SyncClient에 넘깁니다.
+3. **SyncClient** (`client/src/sync/SyncClient.ts`): op를 대기열에 넣고 내 화면에 바로 반영합니다(낙관적 업데이트). 50ms마다 모아서 보냅니다.
+4. **WebSocket**: `mutate` JSON 메시지로 서버에 도착하고, 서버(`server/app.ts`)가 스키마로 형식을 검사합니다.
+5. **Room** (`server/room.ts`): 현재 상태에 비춰 검증한 뒤 방 단위 `seq`를 매기고, 보낸 사람을 포함한 모두에게 `commit`으로 방송합니다. 보낸 사람은 이를 확인으로 받아 대기열에서 뺍니다.
+6. **storage** (`server/storage.ts`): 변경을 1초 모았다가 방 전체를 `DATA_DIR/<roomId>.json`에 저장합니다.
+
+서버와 클라이언트는 `shared/`의 같은 스키마와 reducer를 쓰므로, 같은 순서로 적용하면 같은 상태가 됩니다.
 
 ```
 shared/      서버와 클라이언트가 함께 쓰는 코드
@@ -130,6 +127,7 @@ docs/        프로토콜 설계 문서
 - **텍스트 동시 편집**: 같은 텍스트를 동시에 고치면 나중 값이 이깁니다. 필요하면 텍스트만 CRDT(Yjs `Y.Text`)로 바꿀 수 있습니다.
 - **새로고침 시 미전송 변경**: 오프라인 상태에서 그린 것은 탭을 닫으면 사라집니다(닫기 전에 경고). IndexedDB에 대기열을 저장하면 해결됩니다.
 - **요청 빈도 제한 없음**: 메시지 크기·도형 수는 제한하지만, 연결당 초당 메시지 수는 제한하지 않습니다.
+- **방 전체 크기 제한 없음**: 메시지(1MB), 도형 수(5,000개), 펜 획당 점 수(4,000개)는 각각 제한하지만 방 전체의 바이트 수에는 상한이 없어, 제한 안에서도 방 하나가 수백 MB까지 커질 수 있습니다. 저장할 때는 변경이 이어지는 동안 1초마다 방 전체를 JSON으로 직렬화해 씁니다. 방 단위 크기 상한이나 변경분만 이어 쓰는 저장 방식이 필요합니다.
 - **중복 제거 기록이 계속 늘어남**: 클라이언트별 마지막 `clientSeq`를 페이지를 열 때마다 하나씩 저장하므로, 오래 쓰는 보드에서는 오래된 항목을 정리하는 기준이 필요합니다.
 - 복사/붙여넣기, 도형 그룹, 레이어 순서 변경은 아직 없습니다.
 
