@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { applyOps, PATCH_KEYS } from '../shared/doc.ts';
 import { LIMITS } from '../shared/limits.ts';
 import type {
@@ -33,6 +34,9 @@ export const CLOSE_ROOM_FULL = 4003;
 // 방 하나의 권위 있는 상태. 모든 변경은 여기서 순서(seq)가 정해진다.
 export class Room {
   readonly id: string;
+  // 메모리에 올릴 때마다 새로 정한다. 비정상 종료로 저장하지 못한 커밋이 있으면, 다시 올린 뒤
+  // 같은 seq가 다른 변경에 매겨질 수 있다. 그래서 seq는 같은 epoch 안에서만 비교한다.
+  readonly epoch = randomUUID();
   private seq: number;
   private shapes: Shapes;
   // 클라이언트별로 마지막으로 처리한 clientSeq. 재접속 후 같은 변경이 다시 와도 한 번만 적용한다.
@@ -77,8 +81,9 @@ export class Room {
     conn.send({
       type: 'welcome',
       seq: this.seq,
+      epoch: this.epoch,
       lastClientSeq: this.lastClientSeq.get(hello.clientId) ?? 0,
-      sync: this.catchUp(hello.lastSeq),
+      sync: this.catchUp(hello.lastSeq, hello.epoch),
       peers: [...this.members.values()].map((m) => ({ clientId: m.clientId, presence: m.presence })),
     });
     this.members.set(conn, member);
@@ -120,11 +125,15 @@ export class Room {
     return { seq: this.seq, shapes: this.shapes, lastClientSeq: Object.fromEntries(this.lastClientSeq) };
   }
 
-  private catchUp(lastSeq: number | null): Extract<ServerMessage, { type: 'welcome' }>['sync'] {
+  private catchUp(
+    lastSeq: number | null,
+    epoch: string | null | undefined,
+  ): Extract<ServerMessage, { type: 'welcome' }>['sync'] {
     const oldest = this.log[0]?.seq ?? this.seq + 1;
     // 클라이언트가 아는 seq 이후의 커밋이 로그에 전부 남아 있을 때만 증분으로 보낸다.
     // 서버가 재시작해 클라이언트가 서버보다 앞서 있는 경우 등은 스냅샷으로 덮어쓴다.
-    if (lastSeq !== null && lastSeq <= this.seq && lastSeq + 1 >= oldest) {
+    // epoch가 다르면 같은 seq라도 같은 상태라는 보장이 없으므로 역시 스냅샷을 보낸다.
+    if (lastSeq !== null && epoch === this.epoch && lastSeq <= this.seq && lastSeq + 1 >= oldest) {
       return { kind: 'ops', commits: this.log.filter((c) => c.seq > lastSeq) };
     }
     return { kind: 'snapshot', shapes: this.shapes };

@@ -56,6 +56,8 @@ export class SyncClient {
 
   private confirmed: Shapes = {};
   private seq: number | null = null;
+  // seq를 받은 방의 epoch. 재접속할 때 함께 보내, 그사이 서버가 방을 다시 올렸는지 알게 한다.
+  private epoch: string | null = null;
   private pending: PendingMutation[] = [];
   private nextClientSeq = 1;
 
@@ -168,6 +170,7 @@ export class SyncClient {
         roomId: this.options.roomId,
         clientId: this.clientId,
         lastSeq: this.seq,
+        epoch: this.epoch,
         user: this.user,
       });
       this.startHeartbeat();
@@ -240,6 +243,7 @@ export class SyncClient {
   private handleMessage(message: ServerMessage): void {
     switch (message.type) {
       case 'welcome': {
+        this.epoch = message.epoch;
         if (message.sync.kind === 'snapshot') {
           this.confirmed = message.sync.shapes;
           this.seq = message.seq;

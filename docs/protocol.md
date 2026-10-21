@@ -34,11 +34,11 @@
 
 | 방향 | 메시지 | 의미 |
 | --- | --- | --- |
-| C → S | `hello { roomId, clientId, lastSeq, user }` | 접속. `lastSeq`는 마지막으로 확정받은 seq(처음이면 `null`) |
+| C → S | `hello { roomId, clientId, lastSeq, epoch, user }` | 접속. `lastSeq`는 마지막으로 확정받은 seq, `epoch`는 그 seq를 받은 방의 epoch(처음이면 둘 다 `null`) |
 | C → S | `mutate { clientSeq, ops }` | 변경 묶음. `clientSeq`는 클라이언트별 단조 증가 번호(멱등 키) |
 | C → S | `presence { user, cursor, selection }` | 커서와 선택 영역. 저장하지 않음. `selection`은 방에 있는 도형 id만 남겨 전달 |
 | C → S | `ping` | 연결 확인 |
-| S → C | `welcome { seq, lastClientSeq, sync, peers }` | 접속 응답. `sync`는 놓친 커밋 목록 또는 전체 스냅샷 |
+| S → C | `welcome { seq, epoch, lastClientSeq, sync, peers }` | 접속 응답. `sync`는 놓친 커밋 목록 또는 전체 스냅샷. `epoch`는 서버가 방을 메모리에 올릴 때마다 새로 정하는 값 |
 | S → C | `commit { seq, clientId, clientSeq, ops }` | 서버가 순서를 확정한 변경. **보낸 사람에게도** 보냄 |
 | S → C | `reject { clientSeq, reason }` | 서버가 거부한 변경. 보낸 사람에게만 보냄 |
 | S → C | `presence`, `leave` | 다른 사람의 커서/선택, 퇴장 |
@@ -106,15 +106,21 @@ sequenceDiagram
     Note over C: 마지막 확정 seq = 40, pending = [clientSeq 7, 8]
     C--xS: 연결 끊김 (7은 서버가 처리했지만 commit을 못 받음)
     Note over C: 백오프 + 지터 후 재접속 (online 이벤트면 즉시)
-    C->>S: hello { lastSeq: 40 }
-    alt 41번 이후 커밋이 서버 로그에 남아 있음
+    C->>S: hello { lastSeq: 40, epoch }
+    alt epoch가 같고 41번 이후 커밋이 서버 로그에 남아 있음
         S->>C: welcome { sync: ops [41, 42, ...], lastClientSeq: 7 }
-    else 로그에서 밀려났거나 서버가 재시작됨
+    else 로그에서 밀려났거나 서버가 방을 다시 올림(epoch가 다름)
         S->>C: welcome { sync: snapshot, lastClientSeq: 7 }
     end
     C->>C: 놓친 커밋 적용, clientSeq ≤ 7인 pending 제거
     C->>S: mutate { clientSeq: 8 } (같은 번호로 재전송)
 ```
+
+### 같은 seq가 다른 변경을 가리키지 않게 — epoch
+
+저장은 1초씩 모았다가 하므로, 서버가 비정상 종료되면 마지막 커밋 몇 개가 파일에 남지 않을 수 있습니다. 다시 올린 방은 저장된 seq(예: 1)부터 이어 가므로, 먼저 들어온 사람의 변경이 **잃어버린 커밋이 쓰던 seq 2**를 다시 받습니다. 예전 seq 2까지 봤던 클라이언트가 `lastSeq: 2`로 돌아오면 seq만 보고는 놓친 커밋이 없어 보여 빈 증분을 받고, 그 뒤로 계속 다른 보드를 보게 됩니다.
+
+그래서 서버는 방을 메모리에 올릴 때마다 무작위 `epoch`를 정해 `welcome`에 담고, 클라이언트는 받은 값을 다음 `hello`에 그대로 보냅니다. `epoch`가 없거나 지금 방과 다르면 seq를 비교하지 않고 전체 스냅샷을 보냅니다. Room 단위 테스트 `저장하기 전에 서버가 죽어 seq가 다시 쓰였으면, 이전 epoch로 들어온 클라이언트에게 스냅샷을 보낸다`가 이 상황을 재현합니다.
 
 ### 같은 변경이 두 번 반영되지 않게 — 멱등성
 
@@ -148,7 +154,8 @@ sequenceDiagram
 | 네트워크 끊김 후 복구 | 변경은 대기열에 쌓이고, 다시 연결되면 전송. 그 사이 남의 변경도 받음 | 통합, E2E |
 | 보냈지만 응답을 못 받음 | `lastClientSeq`로 정리 + 서버에서 `clientSeq` 중복 제거 | 통합, Room 단위 |
 | 오래 끊겨서 놓친 커밋이 로그에서 밀려남 | 전체 스냅샷 후 대기 변경을 다시 얹음 | Room 단위 |
-| 서버 재시작 | 1초 간격 파일 저장 + 종료 시 저장. 클라이언트는 자동 재접속 | 통합 |
+| 서버 재시작 | 1초 간격 파일 저장 + 종료 시 저장. 클라이언트는 자동 재접속하고, epoch가 바뀌었으므로 스냅샷을 받음 | 통합 |
+| 비정상 종료로 잃은 커밋의 seq가 다시 쓰임 | epoch가 다르므로 증분 대신 스냅샷 | Room 단위 |
 | 반쯤 끊긴 이전 연결이 남아 있음 | 같은 `clientId`로 새로 들어오면 이전 연결을 닫음(코드 4000) | Room 단위 |
 | 스키마에 안 맞는 메시지 | 연결 종료(1007/1008) | 서버 |
 | 도형 타입에 없는 속성 수정, 도형 수 초과 | `reject` → 보낸 사람 화면 롤백 | 통합, Room 단위 |
@@ -170,7 +177,7 @@ sequenceDiagram
 - `Room`은 소켓을 모릅니다(`Connection` 인터페이스만 앎). 그래서 소켓 없이 단위 테스트할 수 있습니다.
 - 접속자가 있는 방만 메모리에 올립니다. 마지막 사람이 나가고 30초가 지나면 저장 후 내립니다.
 - 저장은 변경 후 1초 모았다가 `임시 파일에 쓰기 → rename`으로 합니다. 쓰는 도중 죽어도 기존 파일이 깨지지 않습니다.
-- 최근 커밋 1000개를 메모리에 두고 재접속한 클라이언트에게 증분으로 보냅니다. 커밋 로그는 저장하지 않습니다(재시작 후에는 스냅샷으로 충분).
+- 최근 커밋 1000개를 메모리에 두고 재접속한 클라이언트에게 증분으로 보냅니다. 커밋 로그는 저장하지 않습니다. 방을 다시 올리면 epoch가 바뀌므로 재접속한 클라이언트는 스냅샷을 받습니다.
 
 ## 10. 왜 이렇게 만들었나
 

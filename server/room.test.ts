@@ -16,11 +16,12 @@ class FakeConnection implements Connection {
   }
 }
 
-const hello = (clientId: string, lastSeq: number | null = null): HelloMessage => ({
+const hello = (clientId: string, lastSeq: number | null = null, epoch: string | null = null): HelloMessage => ({
   type: 'hello',
   roomId: 'room0001',
   clientId,
   lastSeq,
+  epoch,
   user: { name: clientId, color: '#123456' },
 });
 
@@ -94,7 +95,7 @@ describe('Room', () => {
     room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape001') }] });
     room.handle(a, { type: 'mutate', clientSeq: 2, ops: [{ type: 'add', shape: rect('shape002') }] });
     const c = new FakeConnection();
-    room.join(c, hello('clientCCC', 1));
+    room.join(c, hello('clientCCC', 1, room.epoch));
     const welcome = c.last('welcome');
     expect(welcome?.sync.kind).toBe('ops');
     expect(welcome?.sync.kind === 'ops' && welcome.sync.commits.map((x) => x.seq)).toEqual([2]);
@@ -106,15 +107,41 @@ describe('Room', () => {
       room.handle(a, { type: 'mutate', clientSeq: i, ops: [{ type: 'add', shape: rect(`shape00${i}`) }] });
     }
     const c = new FakeConnection();
-    room.join(c, hello('clientCCC', 1)); // 로그에는 seq 3~5만 남아 있다
+    room.join(c, hello('clientCCC', 1, room.epoch)); // 로그에는 seq 3~5만 남아 있다
     expect(c.last('welcome')?.sync.kind).toBe('snapshot');
   });
 
   it('클라이언트가 서버보다 앞선 seq를 말하면(서버 재시작 등) 스냅샷을 보낸다', () => {
     const { room } = setup();
     const c = new FakeConnection();
-    room.join(c, hello('clientCCC', 42));
+    room.join(c, hello('clientCCC', 42, room.epoch));
     expect(c.last('welcome')?.sync.kind).toBe('snapshot');
+  });
+
+  it('저장하기 전에 서버가 죽어 seq가 다시 쓰였으면, 이전 epoch로 들어온 클라이언트에게 스냅샷을 보낸다', () => {
+    const { room, a } = setup();
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape001') }] });
+    const saved = structuredClone(room.toSnapshot()); // 파일에는 seq 1까지만 저장됐다
+    room.handle(a, { type: 'mutate', clientSeq: 2, ops: [{ type: 'add', shape: rect('shape002') }] }); // 저장 전에 죽어 잃는다
+
+    // 다시 올린 방에서 B가 먼저 들어와 변경하면, 다른 변경이 seq 2를 받는다.
+    const restored = new Room('room0001', saved);
+    const b = new FakeConnection();
+    restored.join(b, hello('clientBBB', 2, room.epoch));
+    restored.handle(b, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape003') }] });
+    expect(restored.toSnapshot().seq).toBe(2);
+
+    // seq 2까지 봤던 A가 돌아오면 놓친 커밋이 없어 보이지만, 상태가 다르므로 스냅샷을 받아야 한다.
+    const again = new FakeConnection();
+    restored.join(again, hello('clientAAA', 2, room.epoch));
+    expect(again.last('welcome')?.sync).toEqual({ kind: 'snapshot', shapes: restored.toSnapshot().shapes });
+    const noEpoch = new FakeConnection();
+    restored.join(noEpoch, hello('clientDDD', 2));
+    expect(noEpoch.last('welcome')?.sync.kind).toBe('snapshot');
+    // 같은 epoch라면 지금처럼 놓친 커밋만 보낸다.
+    const sameEpoch = new FakeConnection();
+    restored.join(sameEpoch, hello('clientCCC', 1, restored.epoch));
+    expect(sameEpoch.last('welcome')?.sync).toMatchObject({ kind: 'ops', commits: [{ seq: 2 }] });
   });
 
   it('welcome에 이 클라이언트가 마지막으로 처리된 clientSeq를 담는다', () => {
