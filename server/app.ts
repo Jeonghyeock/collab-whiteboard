@@ -111,7 +111,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: LIMITS.maxMessageBytes });
   server.on('upgrade', (req, socket, head) => {
-    if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/ws') {
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    } catch {
+      // 'http://[/ws'처럼 해석할 수 없는 주소. 여기서 던지면 서버 프로세스 전체가 죽는다.
+      socket.destroy();
+      return;
+    }
+    if (pathname !== '/ws') {
       socket.destroy();
       return;
     }
