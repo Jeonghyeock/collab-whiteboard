@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { applyOps, PATCH_KEYS } from '../shared/doc.ts';
 import { LIMITS } from '../shared/limits.ts';
 import type {
@@ -31,6 +31,12 @@ type MutateMessage = Extract<ClientMessage, { type: 'mutate' }>;
 export const CLOSE_REPLACED = 4000;
 export const CLOSE_ROOM_FULL = 4003;
 
+// 다른 사람에게 보이는 id는 비밀 키의 해시로 만든다. 같은 키면 서버가 재시작해도 같은 id가 되고,
+// 공개 id만 보고는 키를 알 수 없으니 남의 id로 그 사람의 연결이나 중복 제거 기록을 가로챌 수 없다.
+function publicIdOf(clientSecret: string): string {
+  return createHash('sha256').update(clientSecret).digest('hex').slice(0, 24);
+}
+
 // 방 하나의 권위 있는 상태. 모든 변경은 여기서 순서(seq)가 정해진다.
 export class Room {
   readonly id: string;
@@ -62,9 +68,10 @@ export class Room {
   }
 
   join(conn: Connection, hello: HelloMessage): void {
+    const clientId = publicIdOf(hello.clientSecret);
     // 반쯤 끊긴 이전 연결이 남아 있으면 새 연결로 교체한다.
     for (const [other, member] of this.members) {
-      if (member.clientId === hello.clientId) {
+      if (member.clientId === clientId) {
         this.members.delete(other);
         other.close(CLOSE_REPLACED, 'replaced by a new connection');
       }
@@ -75,14 +82,15 @@ export class Room {
     }
 
     const member: Member = {
-      clientId: hello.clientId,
+      clientId,
       presence: { user: hello.user, cursor: null, selection: [] },
     };
     conn.send({
       type: 'welcome',
+      clientId,
       seq: this.seq,
       epoch: this.epoch,
-      lastClientSeq: this.lastClientSeq.get(hello.clientId) ?? 0,
+      lastClientSeq: this.lastClientSeq.get(clientId) ?? 0,
       sync: this.catchUp(hello.lastSeq, hello.epoch),
       peers: [...this.members.values()].map((m) => ({ clientId: m.clientId, presence: m.presence })),
     });

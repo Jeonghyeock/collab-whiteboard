@@ -41,7 +41,10 @@ const MAX_BATCH_BYTES = 256 * 1024;
 
 export class SyncClient {
   // 페이지를 새로 열 때마다 새로 만든다. 재접속해도 유지되므로 서버가 재전송을 알아볼 수 있다.
-  readonly clientId = randomId(16);
+  // 서버에만 보내는 비밀 키다. 다른 사람에게는 서버가 이 키로 만든 공개 id만 보인다.
+  private readonly clientSecret = randomId(24);
+  // welcome에서 받는 내 공개 id. 받은 commit이 내 것인지 알아보는 데 쓴다.
+  private clientId: string | null = null;
   private readonly options: SyncClientOptions;
   private readonly sendIntervalMs: number;
   private readonly heartbeatMs: number;
@@ -168,7 +171,7 @@ export class SyncClient {
       this.send({
         type: 'hello',
         roomId: this.options.roomId,
-        clientId: this.clientId,
+        clientSecret: this.clientSecret,
         lastSeq: this.seq,
         epoch: this.epoch,
         user: this.user,
@@ -243,6 +246,7 @@ export class SyncClient {
   private handleMessage(message: ServerMessage): void {
     switch (message.type) {
       case 'welcome': {
+        this.clientId = message.clientId;
         this.epoch = message.epoch;
         if (message.sync.kind === 'snapshot') {
           this.confirmed = message.sync.shapes;
