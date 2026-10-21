@@ -65,6 +65,11 @@ describe('server', () => {
     expect(await rawGet('/healthz')).toBe(200);
   });
 
+  it('메시지 크기 제한을 넘으면 그 연결만 닫고(1009) 서버는 계속 동작한다', async () => {
+    expect(await closeCodeAfter(['x'.repeat(2 * 1024 * 1024)])).toBe(1009);
+    expect(await rawGet('/healthz')).toBe(200);
+  });
+
   it('정적 파일 경로로 상위 폴더에 접근할 수 없다', async () => {
     expect(await rawGet('/..%2f..%2fpackage.json')).toBe(403);
   });

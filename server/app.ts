@@ -132,6 +132,9 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   }, heartbeatMs);
 
   wss.on('connection', (ws) => {
+    // 크기 제한 초과, 잘못된 프레임 등 프로토콜 위반이 오면 ws가 'error'를 내고 소켓은 스스로 닫는다.
+    // 리스너가 없으면 처리되지 않은 에러가 되어 서버 프로세스 전체가 죽으므로 받아 두기만 한다.
+    ws.on('error', () => {});
     alive.add(ws);
     ws.on('pong', () => alive.add(ws));
 
