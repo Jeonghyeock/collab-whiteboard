@@ -108,6 +108,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     clientId: ClientIdSchema,
     // 마지막으로 확정받은 seq. 처음 접속이면 null → 서버가 전체 스냅샷을 보낸다.
     lastSeq: z.number().int().min(0).nullable(),
+    // lastSeq를 받았던 방의 epoch(welcome에서 받음). 없거나 지금 방과 다르면 서버가 전체 스냅샷을 보낸다.
+    epoch: z.string().max(64).nullish(),
     user: UserSchema,
   }),
   z.strictObject({
@@ -154,6 +156,8 @@ export type ServerMessage =
   | {
       type: 'welcome';
       seq: number;
+      // 방을 메모리에 올릴 때마다 새로 정하는 값. seq는 같은 epoch 안에서만 비교할 수 있다.
+      epoch: string;
       // 이 클라이언트의 변경 중 서버가 마지막으로 처리한 clientSeq. 이하의 대기 변경은 버린다.
       lastClientSeq: number;
       sync: { kind: 'snapshot'; shapes: Shapes } | { kind: 'ops'; commits: Commit[] };
