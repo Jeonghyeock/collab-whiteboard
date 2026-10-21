@@ -438,7 +438,9 @@ export function Canvas(props: CanvasProps) {
 }
 
 function SelectionOverlay({ shapes, ids, zoom, interactive }: { shapes: Shapes; ids: string[]; zoom: number; interactive: boolean }) {
-  const selected = ids.map((id) => shapes[id]).filter((shape): shape is Shape => shape !== undefined);
+  const selected = ids
+    .map((id) => (Object.hasOwn(shapes, id) ? shapes[id] : undefined))
+    .filter((shape): shape is Shape => shape !== undefined);
   if (selected.length === 0) return null;
   const pad = 4 / zoom;
   const handle = 10 / zoom;
@@ -502,7 +504,8 @@ function PeerSelections({ shapes, peers }: { shapes: Shapes; peers: ReadonlyMap<
     <g className="peer-selections">
       {[...peers].flatMap(([clientId, presence]) =>
         presence.selection.map((id) => {
-          const shape = shapes[id];
+          // 남이 보낸 id다. 'toString' 같은 이름이 와도 상속된 속성을 도형으로 착각하지 않게 한다.
+          const shape = Object.hasOwn(shapes, id) ? shapes[id] : undefined;
           if (!shape) return null;
           const b = shapeBounds(shape);
           return (

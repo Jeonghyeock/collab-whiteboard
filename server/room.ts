@@ -100,7 +100,12 @@ export class Room {
         this.mutate(conn, member, message);
         break;
       case 'presence':
-        member.presence = { user: message.user, cursor: message.cursor, selection: message.selection };
+        member.presence = {
+          user: message.user,
+          cursor: message.cursor,
+          // 방에 있는 도형 id만 전달한다. 'toString'처럼 상속된 속성 이름은 받는 쪽에서 도형으로 오인될 수 있다.
+          selection: message.selection.filter((id) => Object.hasOwn(this.shapes, id)),
+        };
         this.broadcast({ type: 'presence', clientId: member.clientId, presence: member.presence }, conn);
         break;
       case 'ping':

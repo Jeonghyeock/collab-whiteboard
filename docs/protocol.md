@@ -36,7 +36,7 @@
 | --- | --- | --- |
 | C → S | `hello { roomId, clientId, lastSeq, user }` | 접속. `lastSeq`는 마지막으로 확정받은 seq(처음이면 `null`) |
 | C → S | `mutate { clientSeq, ops }` | 변경 묶음. `clientSeq`는 클라이언트별 단조 증가 번호(멱등 키) |
-| C → S | `presence { user, cursor, selection }` | 커서와 선택 영역. 저장하지 않음 |
+| C → S | `presence { user, cursor, selection }` | 커서와 선택 영역. 저장하지 않음. `selection`은 방에 있는 도형 id만 남겨 전달 |
 | C → S | `ping` | 연결 확인 |
 | S → C | `welcome { seq, lastClientSeq, sync, peers }` | 접속 응답. `sync`는 놓친 커밋 목록 또는 전체 스냅샷 |
 | S → C | `commit { seq, clientId, clientSeq, ops }` | 서버가 순서를 확정한 변경. **보낸 사람에게도** 보냄 |
