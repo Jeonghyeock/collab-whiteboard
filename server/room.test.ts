@@ -148,6 +148,22 @@ describe('Room', () => {
     expect(b.last('leave')).toEqual({ type: 'leave', clientId: 'clientAAA' });
   });
 
+  it('선택 영역은 방에 있는 도형 id만 남겨 전달한다', () => {
+    const { room, a, b } = setup();
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape001') }] });
+    room.handle(a, {
+      type: 'presence',
+      user: { name: 'A', color: '#123456' },
+      cursor: null,
+      selection: ['toString', 'shape001', 'missing01'],
+    });
+    expect(b.last('presence')?.presence.selection).toEqual(['shape001']);
+    const c = new FakeConnection();
+    room.join(c, hello('clientCCC'));
+    const peerA = c.last('welcome')?.peers.find((p) => p.clientId === 'clientAAA');
+    expect(peerA?.presence.selection).toEqual(['shape001']);
+  });
+
   it('스냅샷에서 복원하면 seq와 중복 제거 정보가 이어진다', () => {
     const { room, a } = setup();
     room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape001') }] });
