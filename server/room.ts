@@ -173,13 +173,23 @@ export class Room {
 
   // 스키마 검사는 메시지를 받을 때 끝났다. 여기서는 현재 상태에 비춰 봐야 아는 것만 검사한다.
   private validate(ops: readonly Op[]): string | null {
-    const typeInBatch = new Map<string, ShapeType>();
+    // op를 reducer와 같은 순서·규칙으로 따라가며, 그 시점에 실제로 있는 도형의 타입으로 패치를 검사한다.
+    // 이미 있는 id로의 add는 reducer가 무시하므로 타입을 바꾸지 않는다. 그 add의 타입을 믿으면 다른 타입의
+    // 속성(펜에 w·fill 등)이 검사를 통과해 스키마에 맞지 않는 도형이 저장·방송됐다.
+    const typeInBatch = new Map<string, ShapeType | null>(); // null: 이 묶음에서 지워짐
+    const typeOf = (id: string) =>
+      typeInBatch.has(id)
+        ? (typeInBatch.get(id) ?? undefined)
+        : Object.hasOwn(this.shapes, id)
+          ? this.shapes[id]?.type
+          : undefined;
     for (const op of ops) {
       if (op.type === 'add') {
-        typeInBatch.set(op.shape.id, op.shape.type);
-      } else if (op.type === 'update') {
-        const type =
-          typeInBatch.get(op.id) ?? (Object.hasOwn(this.shapes, op.id) ? this.shapes[op.id]?.type : undefined);
+        if (!typeOf(op.shape.id)) typeInBatch.set(op.shape.id, op.shape.type);
+      } else if (op.type === 'delete') {
+        typeInBatch.set(op.id, null);
+      } else {
+        const type = typeOf(op.id);
         if (!type) continue; // 없는 도형에 대한 수정은 reducer에서 무시된다.
         const allowed = PATCH_KEYS[type];
         const invalid = Object.keys(op.patch).find((key) => !allowed.has(key));

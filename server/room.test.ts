@@ -93,6 +93,40 @@ describe('Room', () => {
     expect(room.toSnapshot().shapes['shape001']).toMatchObject({ w: 99 });
   });
 
+  it('이미 있는 id로의 add(무시됨)는 타입을 바꾸지 않아, 다른 타입의 속성 패치를 거부한다', () => {
+    const { room, a } = setup();
+    const pen = { id: 'shape001', type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points: [0, 0] } as Shape;
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen }] });
+    // 고치기 전에는 무시될 add 의 'rect' 를 믿어, 펜에 w·fill 이 붙은 도형이 저장·방송됐다
+    room.handle(a, {
+      type: 'mutate',
+      clientSeq: 2,
+      ops: [
+        { type: 'add', shape: rect('shape001') },
+        { type: 'update', id: 'shape001', patch: { w: 99, fill: '#ff0000' } },
+      ],
+    });
+    expect(a.last('reject')).toMatchObject({ clientSeq: 2 });
+    expect(room.toSnapshot().shapes['shape001']).not.toHaveProperty('w');
+  });
+
+  it('같은 묶음에서 지웠다가 다른 타입으로 다시 추가하면 새 타입으로 검사한다', () => {
+    const { room, a } = setup();
+    const pen = { id: 'shape001', type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points: [0, 0] } as Shape;
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen }] });
+    room.handle(a, {
+      type: 'mutate',
+      clientSeq: 2,
+      ops: [
+        { type: 'delete', id: 'shape001' },
+        { type: 'add', shape: rect('shape001') },
+        { type: 'update', id: 'shape001', patch: { w: 99 } },
+      ],
+    });
+    expect(a.last('reject')).toBeUndefined();
+    expect(room.toSnapshot().shapes['shape001']).toMatchObject({ type: 'rect', w: 99 });
+  });
+
   it('재접속한 클라이언트에게 로그에 남아 있으면 놓친 커밋만 보낸다', () => {
     const { room, a } = setup();
     room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: rect('shape001') }] });
