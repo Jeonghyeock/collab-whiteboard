@@ -1,3 +1,4 @@
+import { LIMITS } from '../../../shared/limits.ts';
 import type { Point, Shape, Shapes } from '../../../shared/protocol.ts';
 import type { Camera } from './types.ts';
 
@@ -111,6 +112,14 @@ export function zoomAt(camera: Camera, nextZoom: number, anchor: Point): Camera 
   const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
   const world = screenToWorld(camera, anchor);
   return { zoom, x: world.x - anchor.x / zoom, y: world.y - anchor.y / zoom };
+}
+
+// 보는 영역을 서버 스키마의 좌표 범위(±LIMITS.maxCoord) 안으로 막는다. 화면 안의 어느 점도 범위를 벗어나지 않으므로
+// 그리거나 옮긴 좌표가 처음부터 범위 안에 있다(보낼 때 잘려 도형이 알림 없이 다른 자리로 옮겨지지 않게).
+export function clampCamera(camera: Camera, viewport: { width: number; height: number }): Camera {
+  const max = LIMITS.maxCoord;
+  const clampAxis = (value: number, span: number) => Math.min(Math.max(value, -max), Math.max(-max, max - span));
+  return { ...camera, x: clampAxis(camera.x, viewport.width / camera.zoom), y: clampAxis(camera.y, viewport.height / camera.zoom) };
 }
 
 export function fitBounds(bounds: Bounds, viewport: { width: number; height: number }, padding = 80): Camera {

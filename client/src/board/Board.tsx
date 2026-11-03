@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import type { Op, Shape, User } from '../../../shared/protocol.ts';
 import { randomId } from '../lib/id.ts';
@@ -7,7 +7,7 @@ import type { SyncClient } from '../sync/SyncClient.ts';
 import { BottomBar } from './BottomBar.tsx';
 import { Canvas, isEditable } from './Canvas.tsx';
 import { exportPng } from './exportImage.ts';
-import { fitBounds, shapeBounds, topZ, unionBounds, zoomAt } from './geometry.ts';
+import { clampCamera, fitBounds, shapeBounds, topZ, unionBounds, zoomAt } from './geometry.ts';
 import { COLORS, stylePatch, styleOf } from './style.ts';
 import { TextEditor } from './TextEditor.tsx';
 import { StylePanel, Toolbar, TOOLS } from './Toolbar.tsx';
@@ -38,7 +38,11 @@ export function Board({ roomId, client, history, user, onRename }: BoardProps) {
   const [tool, setTool] = useState<Tool>('select');
   const [style, setStyle] = useState<Style>({ stroke: COLORS[0]!, size: 'm', filled: false });
   const [selected, setSelected] = useState<string[]>([]);
-  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 });
+  const [camera, setCameraState] = useState<Camera>({ x: 0, y: 0, zoom: 1 });
+  // 카메라는 언제나 좌표 범위 안에 둔다(clampCamera). Canvas 의 휠·드래그 이동도 이 함수를 쓴다.
+  const setCamera = useCallback((next: SetStateAction<Camera>) => {
+    setCameraState((prev) => clampCamera(typeof next === 'function' ? next(prev) : next, viewport()));
+  }, []);
   const [editing, setEditing] = useState<TextEditing | null>(null);
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   // blur와 캔버스 클릭이 같은 편집을 두 번 끝내지 않도록, 끝낸 편집을 기억해 둔다.

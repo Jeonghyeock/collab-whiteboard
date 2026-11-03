@@ -56,12 +56,20 @@ describe('clampOps', () => {
     expect(clampPoint({ x: 5, y: -7 })).toEqual({ x: 5, y: -7 });
   });
 
+  it('NaN 은 0 으로 바꿔 서버가 받는 값으로 만든다', () => {
+    const clamped = clampOps([{ type: 'update', id: 'aaaaaaaa', patch: { x: Number.NaN } }]);
+    expect(clamped[0]).toMatchObject({ patch: { x: 0 } });
+    expect(accepted(clamped)).toBe(true);
+  });
+
   it('범위 안의 값과 삭제는 그대로 둔다', () => {
     const ops: Op[] = [
       { type: 'add', shape: rect({ x: 123.5, z: 7 }) },
       { type: 'update', id: 'aaaaaaaa', patch: { stroke: '#ff0000' } },
       { type: 'delete', id: 'aaaaaaaa' },
     ];
-    expect(clampOps(ops)).toEqual(ops);
+    const clamped = clampOps(ops);
+    expect(clamped).toEqual(ops);
+    clamped.forEach((op, i) => expect(op).toBe(ops[i])); // 복사하지 않는다
   });
 });
