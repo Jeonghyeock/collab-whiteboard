@@ -85,6 +85,17 @@ describe('SyncClient + server', () => {
     expect(Object.keys(shapes)).toEqual(['shape001']);
   });
 
+  it('스키마 밖 값은 잘라서, 내 화면과 서버·다른 사람이 같은 값을 갖는다', async () => {
+    const room = roomId();
+    const a = connect(room);
+    const b = connect(room);
+    await online(a, b);
+    a.mutate([{ type: 'add', shape: rect('shape009', { z: 1e9 + 5 }) }]);
+    expect(a.getState().shapes['shape009']?.z).toBe(1e9);
+    const shapes = await converged(a, b);
+    expect(shapes['shape009']?.z).toBe(1e9);
+  });
+
   it('서버 확인 전에 내 화면에 먼저 반영한다 (낙관적 업데이트)', async () => {
     const a = connect(roomId());
     await online(a);
