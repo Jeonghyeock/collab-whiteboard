@@ -12,6 +12,7 @@ import {
 import { LIMITS } from '../../../shared/limits.ts';
 import type { Point, Presence, Shape, Shapes } from '../../../shared/protocol.ts';
 import { randomId } from '../lib/id.ts';
+import { clampPoint } from '../sync/clampOps.ts';
 import type { History } from '../sync/History.ts';
 import type { SyncClient } from '../sync/SyncClient.ts';
 import {
@@ -243,7 +244,8 @@ export function Canvas(props: CanvasProps) {
 
   function onPointerMove(e: PointerEvent<SVGSVGElement>) {
     const p = toWorld(e);
-    client.setPresence({ cursor: { x: round(p.x), y: round(p.y) } });
+    // 커서도 서버 스키마 범위(±1e6) 안으로 자른다. 벗어나면 서버가 연결을 끊고, 재접속 때 같은 커서를 다시 보내 끊김이 되풀이됐다.
+    client.setPresence({ cursor: clampPoint({ x: round(p.x), y: round(p.y) }) });
     const it = interaction.current;
 
     switch (it.kind) {

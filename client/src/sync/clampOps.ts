@@ -1,5 +1,5 @@
 import { LIMITS } from '../../../shared/limits.ts';
-import type { Op, Shape, ShapePatch } from '../../../shared/protocol.ts';
+import type { Op, Point, Shape, ShapePatch } from '../../../shared/protocol.ts';
 
 // 서버 스키마의 범위 밖 값(좌표·크기 ±1e6, z ±1e9)을 범위 안으로 자른다.
 // 범위 밖 값이 든 변경은 서버가 연결을 끊고(1008), 클라이언트는 같은 변경을 다시 보내 끊김이 끝없이 반복됐다.
@@ -20,6 +20,10 @@ function clampFields<T extends Shape | ShapePatch>(fields: T): T {
     out.points = (out.points as number[]).map((p) => clamp(p, -LIMITS.maxCoord, LIMITS.maxCoord));
   }
   return out as T;
+}
+
+export function clampPoint(point: Point): Point {
+  return { x: clamp(point.x, -LIMITS.maxCoord, LIMITS.maxCoord), y: clamp(point.y, -LIMITS.maxCoord, LIMITS.maxCoord) };
 }
 
 export function clampOps(ops: Op[]): Op[] {
