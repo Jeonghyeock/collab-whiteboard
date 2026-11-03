@@ -85,6 +85,33 @@ describe('server', () => {
     expect(await rawGet('/healthz')).toBe(200);
   });
 
+  it('검증이 무거운 메시지 하나로 서버가 죽지 않고, 그 연결만 닫힌다(먼저 들어온 사람은 그대로)', async () => {
+    // zod 4.6.5 는 .max() 를 넘는 배열도 원소마다 이슈를 모으다 RangeError 를 던졌고, async 리스너라 처리되지 않은
+    // rejection 이 되어 서버 프로세스 전체가 죽었다(인증·hello 없이 메시지 하나로 재현).
+    const member = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await new Promise<void>((resolve) => {
+      member.onopen = () => member.send(JSON.stringify(hello('crashRoom1')));
+      member.onmessage = () => resolve(); // welcome
+    });
+
+    const pen = {
+      id: 'aaaaaaaa',
+      type: 'pen',
+      x: 0,
+      y: 0,
+      z: 0,
+      stroke: '#000000',
+      strokeWidth: 2,
+      points: new Array(300_000).fill(''), // 약 900KB — maxPayload(1MB) 안
+    };
+    const attack = { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen }] };
+    expect(await closeCodeAfter([attack])).toBe(1008);
+
+    expect(await rawGet('/healthz')).toBe(200);
+    expect(member.readyState).toBe(WebSocket.OPEN);
+    member.close();
+  });
+
   it('해석할 수 없는 주소로 업그레이드를 요청하면 그 연결만 끊고 서버는 계속 동작한다', async () => {
     await rawUpgrade('http://[/ws');
     expect(await rawGet('/healthz')).toBe(200);
