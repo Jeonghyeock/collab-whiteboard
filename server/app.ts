@@ -29,11 +29,34 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   // ---- 방 관리: 접속자가 있을 때만 메모리에 올리고, 변경은 잠시 모았다가 파일에 저장한다 ----
   const rooms = new Map<string, Room>();
   const loading = new Map<string, Promise<Room>>();
-  const dirty = new Set<Room>();
-  const saveTimers = new Map<Room, NodeJS.Timeout>();
   const unloadTimers = new Map<Room, NodeJS.Timeout>();
   const saveChains = new Map<string, Promise<void>>();
   let closing = false;
+
+  // 방마다 '바뀐 횟수(changed)', '저장 줄에 넣은 횟수(queued)', '저장에 성공한 횟수(saved)'를 둔다.
+  // changed > saved 이면 아직 파일에 없는 변경이 있다. 저장이 실패해도 이 차이는 남으므로, 방을 내릴 때와
+  // 종료할 때 확정된 변경을 버리지 않는다. 실패하면 점점 길게(최대 1분) 기다리며 다시 시도한다.
+  type SaveState = {
+    changed: number;
+    queued: number;
+    saved: number;
+    timer: NodeJS.Timeout | null;
+    due: number;
+    retryMs: number;
+  };
+  const saves = new Map<Room, SaveState>();
+  const saveStateOf = (room: Room): SaveState => {
+    let state = saves.get(room);
+    if (!state) {
+      state = { changed: 0, queued: 0, saved: 0, timer: null, due: 0, retryMs: saveRetryMs };
+      saves.set(room, state);
+    }
+    return state;
+  };
+  const unsaved = (room: Room) => {
+    const state = saves.get(room);
+    return !!state && state.changed > state.saved;
+  };
 
   function getRoom(roomId: string): Promise<Room> {
     const existing = rooms.get(roomId);
@@ -54,33 +77,62 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     return pending;
   }
 
-  function markDirty(room: Room, delayMs = saveDelayMs) {
-    dirty.add(room);
-    if (saveTimers.has(room)) return;
-    saveTimers.set(
-      room,
-      setTimeout(() => void flush(room), delayMs),
-    );
+  // delayMs 뒤에 저장한다. 더 이른 저장이 이미 잡혀 있으면 그대로 두고, 늦은 것(다시 시도 대기)이면 앞당긴다.
+  function scheduleSave(room: Room, delayMs: number) {
+    const state = saveStateOf(room);
+    const due = Date.now() + delayMs;
+    if (state.timer && state.due <= due) return;
+    if (state.timer) clearTimeout(state.timer);
+    state.due = due;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      void flush(room);
+    }, delayMs);
+  }
+
+  function markDirty(room: Room) {
+    saveStateOf(room).changed += 1;
+    scheduleSave(room, saveDelayMs);
   }
 
   // 같은 방의 저장은 순서대로 실행한다(임시 파일을 동시에 쓰지 않도록).
   function flush(room: Room): Promise<void> {
-    clearTimeout(saveTimers.get(room));
-    saveTimers.delete(room);
-    if (!dirty.has(room)) return saveChains.get(room.id) ?? Promise.resolve();
-    dirty.delete(room);
-    const snapshot = room.toSnapshot();
+    const state = saveStateOf(room);
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = null;
     const previous = saveChains.get(room.id) ?? Promise.resolve();
+    if (state.changed === state.queued) return previous; // 이미 저장했거나 저장 줄에 있다
+    const version = state.changed;
+    state.queued = version;
+    const snapshot = room.toSnapshot();
     const next = previous
       .then(() => saveRoom(dataDir, room.id, snapshot))
+      .then(() => {
+        state.saved = Math.max(state.saved, version);
+        state.retryMs = saveRetryMs;
+      })
       .catch((error: unknown) => {
         console.error(`[save] room ${room.id} failed`, error);
-        // 저장하지 못한 변경이 남았으니 다시 저장 대상으로 표시한다. 그대로 두면 새 변경이 없는 한 방을 내릴 때와
-        // 정상 종료 때의 flush 가 이 방을 저장할 것이 없다고 보고 넘어가, 확정된 변경이 사라진다.
-        if (!closing) markDirty(room, saveRetryMs);
+        // 뒤이어 더 새 저장이 줄에 있지 않으면, 이 변경을 다시 저장할 대상으로 되돌린다.
+        if (state.queued === version) state.queued = state.saved;
+        if (!closing && state.changed > state.saved) {
+          scheduleSave(room, state.retryMs);
+          state.retryMs = Math.min(state.retryMs * 2, 60_000);
+        }
       });
     saveChains.set(room.id, next);
     return next;
+  }
+
+  // flush 하고, 기다리는 동안 이어 붙은 저장까지 끝날 때까지 기다린다.
+  async function flushAndSettle(room: Room): Promise<void> {
+    let chain = flush(room);
+    for (;;) {
+      await chain;
+      const latest = saveChains.get(room.id);
+      if (!latest || latest === chain) return;
+      chain = latest;
+    }
   }
 
   function scheduleUnload(room: Room) {
@@ -89,14 +141,17 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       room,
       setTimeout(async () => {
         unloadTimers.delete(room);
-        await flush(room);
+        await flushAndSettle(room);
         // 저장하는 동안 누가 다시 들어왔으면 내리지 않는다.
-        if (room.memberCount === 0 && !dirty.has(room)) {
-          rooms.delete(room.id);
-          saveChains.delete(room.id);
-        } else if (room.memberCount === 0) {
-          scheduleUnload(room); // 저장이 실패해 다시 시도를 기다리는 중이다. 저장된 뒤에 다시 내린다.
+        if (room.memberCount > 0) return;
+        // 저장이 실패해 다시 시도를 기다리는 중이면 내리지 않고, 나중에 다시 내린다.
+        if (unsaved(room)) {
+          scheduleUnload(room);
+          return;
         }
+        rooms.delete(room.id);
+        saveChains.delete(room.id);
+        saves.delete(room);
       }, idleUnloadMs),
     );
   }
@@ -242,7 +297,14 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       for (const timer of unloadTimers.values()) clearTimeout(timer);
-      await Promise.all([...rooms.values()].map(flush));
+      // 종료 중에 저장이 실패하면 잠깐씩 기다리며 두 번 더 시도한다. 그래도 남으면 실패로 알린다(main 은 1 로 끝낸다).
+      for (let attempt = 0; ; attempt++) {
+        await Promise.all([...rooms.values()].map(flushAndSettle));
+        const left = [...rooms.values()].filter(unsaved);
+        if (left.length === 0) return;
+        if (attempt === 2) throw new Error(`[save] 저장하지 못한 방: ${left.map((room) => room.id).join(', ')}`);
+        await new Promise((resolve) => setTimeout(resolve, Math.min(saveRetryMs, 1000)));
+      }
     },
   };
 }
