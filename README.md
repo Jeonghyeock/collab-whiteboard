@@ -68,7 +68,7 @@ docker run -p 3000:3000 -v whiteboard-data:/data collab-whiteboard
 ### 변경 하나가 지나가는 길
 
 1. **Board · Canvas** (`client/src/board/`): 마우스·키보드 입력을 도형 변경(op)으로 만듭니다. 화면은 React + SVG로 그립니다.
-2. **History** (`client/src/sync/History.ts`): 실행 취소를 위해 바뀐 도형의 변경 전/후 모습을 기록하고, op를 SyncClient에 넘깁니다.
+2. **History** (`client/src/sync/History.ts`): 실행 취소를 위해 바뀐 도형의 변경 전/후를 기록하고(수정만 한 도형은 내가 바꾼 속성만), op를 SyncClient에 넘깁니다.
 3. **SyncClient** (`client/src/sync/SyncClient.ts`): op를 대기열에 넣고 내 화면에 바로 반영합니다(낙관적 업데이트). 50ms마다 모아서 보냅니다.
 4. **WebSocket**: `mutate` JSON 메시지로 서버에 도착하고, 서버(`server/app.ts`)가 스키마로 형식을 검사합니다.
 5. **Room** (`server/room.ts`): 현재 상태에 비춰 검증한 뒤 방 단위 `seq`를 매기고, 보낸 사람을 포함한 모두에게 `commit`으로 방송합니다. 보낸 사람은 이를 확인으로 받아 대기열에서 뺍니다.
