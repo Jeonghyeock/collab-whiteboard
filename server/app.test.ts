@@ -276,12 +276,15 @@ describe('느리거나 응답하지 않는 연결', () => {
       const points = new Array(8000).fill(999999); // 펜 하나 약 56KB
       const pen = { id: 'penshape1', type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points };
       flooder.ws.send(JSON.stringify({ type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen }] }));
-      // 커밋 하나 약 0.9MB 를 최대 60번(약 54MB) 보낸다
+      // 커밋 하나 약 0.9MB 를 최대 60번(약 54MB) 보낸다.
+      // flooder 도 커밋을 받는다. 확인(commit)을 받은 뒤에 다음 변경을 보내야 flooder 쪽 버퍼에 커밋이 둘 이상 쌓여
+      // 읽고 있는 flooder 가 먼저 끊기는 일이 없다(CI 처럼 이벤트 루프가 바쁘면 그렇게 실패했다).
       const left = () => flooder.messages.some((m) => m.type === 'leave');
+      const commits = () => flooder.messages.filter((m) => m.type === 'commit').length;
       for (let seq = 2; seq <= 61 && !left(); seq++) {
         const ops = Array.from({ length: 16 }, () => ({ type: 'update', id: 'penshape1', patch: { points } }));
         flooder.ws.send(JSON.stringify({ type: 'mutate', clientSeq: seq, ops }));
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await vi.waitFor(() => expect(left() || commits() >= seq).toBe(true), { timeout: 5000, interval: 5 });
       }
       await vi.waitFor(() => expect(left()).toBe(true), { timeout: 10_000 });
       flooder.ws.close();
