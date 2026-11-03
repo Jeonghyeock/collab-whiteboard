@@ -17,7 +17,12 @@ console.log(`[server] http://localhost:${server.port}${existsSync(distDir) ? '' 
 // 종료 신호를 받으면 접속을 닫고 아직 저장하지 않은 변경을 파일에 쓴 뒤 끝낸다.
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, async () => {
-    await server.close();
-    process.exit(0);
+    try {
+      await server.close();
+      process.exit(0);
+    } catch (error) {
+      console.error(error); // 몇 번 다시 시도해도 저장하지 못한 방이 있다
+      process.exit(1);
+    }
   });
 }

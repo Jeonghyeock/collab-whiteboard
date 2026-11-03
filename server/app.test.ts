@@ -3,7 +3,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from './app.ts';
 
 let server: RunningServer;
@@ -101,55 +101,73 @@ describe('server', () => {
 });
 
 describe('저장', () => {
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  it('저장이 한 번 실패해도 다시 시도해, 방을 내리기 전에 확정된 변경을 파일에 남긴다', async () => {
-    // 고치기 전에는 저장 실패 뒤 dirty 표시가 사라져, 새 변경이 없으면 방을 내릴 때도 다시 저장하지 않았다
-    const roomsDir = path.join(dataDir, 'retry-rooms');
-    const retryServer = await startServer({
-      port: 0,
-      dataDir: roomsDir,
-      saveDelayMs: 10,
-      saveRetryMs: 50,
-      idleUnloadMs: 30,
-    });
+  // 임시 파일 자리에 폴더를 만들어 두면 저장(writeFile)이 EISDIR 로 실패한다
+  const blockSave = (roomsDir: string, roomId: string) => mkdir(path.join(roomsDir, `${roomId}.json.tmp`), { recursive: true });
+  const unblockSave = (roomsDir: string, roomId: string) => rm(path.join(roomsDir, `${roomId}.json.tmp`), { recursive: true });
+  const savedShapeIds = async (roomsDir: string, roomId: string) => {
     try {
-      // 임시 파일 자리에 폴더를 만들어 두면 저장(writeFile)이 EISDIR 로 실패한다
-      const blocker = path.join(roomsDir, 'retryRoom1.json.tmp');
-      await mkdir(blocker, { recursive: true });
-
-      const ws = new WebSocket(`ws://localhost:${retryServer.port}/ws`);
-      const received: string[] = [];
-      const waitFor = (type: string) =>
-        new Promise<void>((resolve) => {
-          const check = () => (received.includes(type) ? resolve() : setTimeout(check, 5));
-          check();
-        });
-      ws.onmessage = (event) => received.push(JSON.parse(String(event.data)).type);
-      ws.onopen = () => ws.send(JSON.stringify(hello('retryRoom1')));
-      await waitFor('welcome'); // hello 처리 전에 온 변경은 서버가 버린다
-      ws.send(
-        JSON.stringify({
-          type: 'mutate',
-          clientSeq: 1,
-          ops: [
-            {
-              type: 'add',
-              shape: { id: 'shape0001', type: 'rect', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, w: 10, h: 10, fill: null },
-            },
-          ],
-        }),
-      );
-      await waitFor('commit');
-      ws.close(); // 아무도 없으니 곧 방을 내리려 한다
-      await sleep(150); // 첫 저장과 방 내리기 직전 저장이 실패할 시간
-
-      await rm(blocker, { recursive: true });
-      await sleep(300); // 다시 시도해 저장할 시간
-      const saved = JSON.parse(await readFile(path.join(roomsDir, 'retryRoom1.json'), 'utf8'));
-      expect(Object.keys(saved.shapes)).toEqual(['shape0001']);
-    } finally {
-      await retryServer.close();
+      return Object.keys(JSON.parse(await readFile(path.join(roomsDir, `${roomId}.json`), 'utf8')).shapes);
+    } catch {
+      return null;
     }
+  };
+
+  // hello 를 보내 welcome 을 받은 뒤 도형 하나를 추가하고 commit 을 기다린다
+  async function addShape(port: number, roomId: string) {
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    const received: string[] = [];
+    ws.onmessage = (event) => received.push(JSON.parse(String(event.data)).type);
+    ws.onopen = () => ws.send(JSON.stringify(hello(roomId)));
+    await vi.waitFor(() => expect(received).toContain('welcome')); // hello 처리 전에 온 변경은 서버가 버린다
+    const shape = { id: 'shape0001', type: 'rect', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, w: 10, h: 10, fill: null };
+    ws.send(JSON.stringify({ type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape }] }));
+    await vi.waitFor(() => expect(received).toContain('commit'));
+    return ws;
+  }
+
+  it('저장이 실패해도 다시 시도해, 방을 비우고 내리기 전에 확정된 변경을 파일에 남긴다', async () => {
+    // 고치기 전에는 저장 실패 뒤 표시가 사라져, 새 변경이 없으면 방을 내릴 때도 다시 저장하지 않았다
+    const roomsDir = path.join(dataDir, 'retry-rooms');
+    const s = await startServer({ port: 0, dataDir: roomsDir, saveDelayMs: 10, saveRetryMs: 50, idleUnloadMs: 30 });
+    try {
+      await blockSave(roomsDir, 'retryRoom1');
+      const ws = await addShape(s.port, 'retryRoom1');
+      ws.close(); // 아무도 없으니 곧 방을 내리려 한다
+      await new Promise((resolve) => setTimeout(resolve, 150)); // 저장과 내리기 직전 저장이 실패할 시간
+      expect(await savedShapeIds(roomsDir, 'retryRoom1')).toBeNull();
+      await unblockSave(roomsDir, 'retryRoom1');
+      await vi.waitFor(async () => expect(await savedShapeIds(roomsDir, 'retryRoom1')).toEqual(['shape0001']), {
+        timeout: 5000,
+      });
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('접속자가 남아 있는 방도 저장 실패 뒤 다시 시도 타이머로 저장한다', async () => {
+    const roomsDir = path.join(dataDir, 'retry-rooms2');
+    const s = await startServer({ port: 0, dataDir: roomsDir, saveDelayMs: 10, saveRetryMs: 50 });
+    try {
+      await blockSave(roomsDir, 'retryRoom2');
+      const ws = await addShape(s.port, 'retryRoom2'); // 연결을 유지한다 → 방을 내리지 않는다
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await unblockSave(roomsDir, 'retryRoom2');
+      await vi.waitFor(async () => expect(await savedShapeIds(roomsDir, 'retryRoom2')).toEqual(['shape0001']), {
+        timeout: 5000,
+      });
+      ws.close();
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('종료할 때까지 끝내 저장하지 못하면 close 가 실패를 알린다', async () => {
+    // 고치기 전에는 종료 중 저장 실패를 로그만 남기고 정상 종료(exit 0)했다
+    const roomsDir = path.join(dataDir, 'retry-rooms3');
+    const s = await startServer({ port: 0, dataDir: roomsDir, saveDelayMs: 1000, saveRetryMs: 20 });
+    await blockSave(roomsDir, 'retryRoom3');
+    const ws = await addShape(s.port, 'retryRoom3');
+    await expect(s.close()).rejects.toThrow(/retryRoom3/);
+    ws.close();
   });
 });
