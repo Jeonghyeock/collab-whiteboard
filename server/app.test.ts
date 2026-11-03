@@ -4,6 +4,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket as WsClient } from 'ws';
 import { startServer, type RunningServer } from './app.ts';
 
 let server: RunningServer;
@@ -197,4 +198,94 @@ describe('저장', () => {
     await expect(s.close()).rejects.toThrow(/retryRoom3/);
     ws.close();
   });
+});
+
+describe('느리거나 응답하지 않는 연결', () => {
+  // 소켓을 읽지 않거나 pong 을 보내지 않는 클라이언트(ws 라이브러리로 흉내 낸다). close 를 처음부터 기록하고,
+  // hello 를 보낸 뒤 welcome 을 기다린다.
+  async function join(port: number, roomId: string, secret: string, options: { autoPong?: boolean } = {}) {
+    const ws = new WsClient(`ws://localhost:${port}/ws`, options);
+    const messages: { type: string }[] = [];
+    let closed = false;
+    ws.on('close', () => (closed = true));
+    ws.on('message', (data) => messages.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+    ws.send(JSON.stringify({ ...hello(roomId), clientSecret: secret }));
+    await vi.waitFor(() => expect(messages.some((m) => m.type === 'welcome')).toBe(true));
+    return { ws, messages, closed: () => closed };
+  }
+
+  async function withServer(options: { heartbeatMs?: number; maxSendBufferBytes?: number }, run: (port: number) => Promise<void>) {
+    const s = await startServer({ port: 0, dataDir: path.join(dataDir, 'slow-rooms'), ...options });
+    try {
+      await run(s.port);
+    } finally {
+      await s.close();
+    }
+  }
+
+  it('pong 없이 앱 ping 만 보내는 연결은 하트비트가 끊는다', async () => {
+    // 고치기 전에는 아무 메시지나 받아도 살아 있다고 봐서, 앱 ping 만으로 하트비트를 피했다
+    await withServer({ heartbeatMs: 50 }, async (port) => {
+      const client = await join(port, 'heartbeat1', 'secretHeartbeat0001', { autoPong: false });
+      const pinger = setInterval(() => {
+        if (client.ws.readyState === WsClient.OPEN) client.ws.send(JSON.stringify({ type: 'ping' }));
+      }, 20);
+      await vi.waitFor(() => expect(client.closed()).toBe(true), { timeout: 2000 }).finally(() => clearInterval(pinger));
+    });
+  });
+
+  it('요청하지 않은 pong 만 보내는 연결도 하트비트가 끊는다', async () => {
+    // 서버가 보낸 ping 의 payload 를 돌려준 pong 만 살아 있다는 표시로 본다
+    await withServer({ heartbeatMs: 50 }, async (port) => {
+      const client = await join(port, 'heartbeat2', 'secretHeartbeat0002', { autoPong: false });
+      const ponger = setInterval(() => {
+        if (client.ws.readyState === WsClient.OPEN) client.ws.pong();
+      }, 20);
+      await vi.waitFor(() => expect(client.closed()).toBe(true), { timeout: 2000 }).finally(() => clearInterval(ponger));
+    });
+  });
+
+  it('pong 으로 답하는 연결은 끊지 않는다', async () => {
+    await withServer({ heartbeatMs: 50 }, async (port) => {
+      const client = await join(port, 'heartbeat3', 'secretHeartbeat0003');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(client.closed()).toBe(false);
+      client.ws.close();
+    });
+  });
+
+  it('클라이언트가 보낸 ping 프레임에 자동으로 pong 을 쌓지 않는다', async () => {
+    // 자동 pong 은 송신 버퍼 상한을 거치지 않아, 읽지 않는 연결이 ping 만 보내도 버퍼가 끝없이 커졌다
+    const client = await join(server.port, 'pingRoom01', 'secretPinger000001');
+    let pongs = 0;
+    client.ws.on('pong', () => (pongs += 1));
+    for (let i = 0; i < 5; i++) client.ws.ping();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pongs).toBe(0);
+    client.ws.close();
+  });
+
+  it('소켓을 읽지 않는 연결은 송신 버퍼가 상한을 넘으면 끊고, 다른 사람에게 나갔다고 알린다', async () => {
+    // 고치기 전에는 send 가 bufferedAmount 를 보지 않아, 읽지 않는 연결마다 서버 메모리가 끝없이 쌓였다.
+    // OS 소켓 버퍼가 먼저 흡수하는 양이 환경마다 달라, 상한을 1MB 로 낮춰 어디서나 넘게 한다.
+    await withServer({ maxSendBufferBytes: 1024 * 1024 }, async (port) => {
+      const reader = await join(port, 'slowRoom01', 'secretSlowReader001');
+      reader.ws.pause(); // 이제부터 읽지 않는다
+      const flooder = await join(port, 'slowRoom01', 'secretFlooder00001');
+      const points = new Array(8000).fill(999999); // 펜 하나 약 56KB
+      const pen = { id: 'penshape1', type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points };
+      flooder.ws.send(JSON.stringify({ type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen }] }));
+      // 커밋 하나 약 0.9MB 를 최대 60번(약 54MB) 보낸다
+      const left = () => flooder.messages.some((m) => m.type === 'leave');
+      for (let seq = 2; seq <= 61 && !left(); seq++) {
+        const ops = Array.from({ length: 16 }, () => ({ type: 'update', id: 'penshape1', patch: { points } }));
+        flooder.ws.send(JSON.stringify({ type: 'mutate', clientSeq: seq, ops }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await vi.waitFor(() => expect(left()).toBe(true), { timeout: 10_000 });
+      flooder.ws.close();
+      reader.ws.terminate();
+    });
+  }, 30_000);
 });
