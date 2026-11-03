@@ -110,8 +110,35 @@ describe('History', () => {
     history.apply([{ type: 'update', id: 'aaaaaaaa', patch: { x: 10 } }]);
     remote([{ type: 'delete', id: 'aaaaaaaa' }]);
     history.commit();
-    history.undo(); // 드래그는 기록되지 않았으므로 그 전 동작(추가)을 되돌린다 — 이미 없으니 아무 일도 없다
+    history.undo(); // 드래그는 기록되지 않았고, 그 전 동작(추가)은 이미 없어 효과가 없다
     expect(get()).toEqual({});
+    history.redo(); // 효과 없던 기록은 버려져, 다시 실행해도 남이 지운 도형이 되살아나지 않는다
+    expect(get()).toEqual({});
+    expect(history.canUndo || history.canRedo).toBe(false);
+  });
+
+  it('효과가 없는 기록은 건너뛰고 그 전 기록을 되돌린다', () => {
+    const { history, remote, get } = setup();
+    history.apply([{ type: 'add', shape: rect('aaaaaaaa') }]);
+    history.apply([{ type: 'add', shape: rect('bbbbbbbb') }]);
+    remote([{ type: 'delete', id: 'bbbbbbbb' }]); // 내가 추가한 B 를 남이 지움
+    history.undo(); // B 추가 기록은 효과가 없어 버리고, A 추가를 되돌린다
+    expect(get()).toEqual({});
+    history.redo();
+    expect(Object.keys(get())).toEqual(['aaaaaaaa']); // B 는 되살아나지 않는다
+  });
+
+  it("'constructor'·'toString' 같은 id 의 도형도 기록하고 되돌린다", () => {
+    // 일반 객체로 기록하던 때는 상속 멤버로 읽혀 기록이 빠지거나 전역 Object.keys 를 덮어썼다
+    const { history, get } = setup();
+    history.apply([{ type: 'add', shape: rect('constructor') }, { type: 'add', shape: rect('toString') }]);
+    history.apply([{ type: 'update', id: 'constructor', patch: { x: 30 } }]);
+    history.apply([{ type: 'delete', id: 'toString' }]);
+    expect(typeof Object.keys).toBe('function');
+    history.undo();
+    expect(Object.keys(get()).sort()).toEqual(['constructor', 'toString']);
+    history.undo();
+    expect(get()['constructor']?.x).toBe(0);
   });
 
   it('결과적으로 아무것도 바뀌지 않은 동작은 기록하지 않는다', () => {
