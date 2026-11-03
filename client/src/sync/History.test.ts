@@ -89,6 +89,31 @@ describe('History', () => {
     expect(history.canRedo).toBe(false);
   });
 
+  it('드래그 중에 남이 바꾼 다른 속성은 실행 취소가 되돌리지 않는다', () => {
+    const { history, remote, get } = setup();
+    history.apply([{ type: 'add', shape: rect('aaaaaaaa') }]);
+    history.begin();
+    history.apply([{ type: 'update', id: 'aaaaaaaa', patch: { x: 10 } }]);
+    remote([{ type: 'update', id: 'aaaaaaaa', patch: { stroke: '#ff0000' } }]); // 드래그 도중 남이 색 변경
+    history.apply([{ type: 'update', id: 'aaaaaaaa', patch: { x: 20 } }]);
+    history.commit();
+    history.undo();
+    expect(get()['aaaaaaaa']).toMatchObject({ x: 0, stroke: '#ff0000' });
+    history.redo();
+    expect(get()['aaaaaaaa']).toMatchObject({ x: 20, stroke: '#ff0000' });
+  });
+
+  it('드래그 중에 남이 지운 도형은 실행 취소로 되살리지 않는다', () => {
+    const { history, remote, get } = setup();
+    history.apply([{ type: 'add', shape: rect('aaaaaaaa') }]);
+    history.begin();
+    history.apply([{ type: 'update', id: 'aaaaaaaa', patch: { x: 10 } }]);
+    remote([{ type: 'delete', id: 'aaaaaaaa' }]);
+    history.commit();
+    history.undo(); // 드래그는 기록되지 않았으므로 그 전 동작(추가)을 되돌린다 — 이미 없으니 아무 일도 없다
+    expect(get()).toEqual({});
+  });
+
   it('결과적으로 아무것도 바뀌지 않은 동작은 기록하지 않는다', () => {
     const { history } = setup();
     history.begin();
