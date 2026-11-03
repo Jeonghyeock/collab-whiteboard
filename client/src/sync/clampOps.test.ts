@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LIMITS } from '../../../shared/limits.ts';
 import { ClientMessageSchema, type Op, type Shape } from '../../../shared/protocol.ts';
-import { clampOps } from './clampOps.ts';
+import { clampOps, clampPoint } from './clampOps.ts';
 
 const rect = (patch: Partial<Shape> = {}): Shape =>
   ({
@@ -45,6 +45,15 @@ describe('clampOps', () => {
     expect(clamped[1]).toMatchObject({ shape: { points: [0, 0, 1e6, -1e6] } });
     expect(clamped[2]).toMatchObject({ patch: { dx: -1e6 } });
     expect(accepted(clamped)).toBe(true);
+  });
+
+  it('커서도 서버가 받는 범위로 자른다', () => {
+    const presence = (cursor: { x: number; y: number }) =>
+      ClientMessageSchema.safeParse({ type: 'presence', user: { name: 'a', color: '#123456' }, cursor, selection: [] }).success;
+    expect(presence({ x: 1e6 + 10, y: 0 })).toBe(false);
+    expect(clampPoint({ x: 1e6 + 10, y: -2e6 })).toEqual({ x: 1e6, y: -1e6 });
+    expect(presence(clampPoint({ x: 1e6 + 10, y: -2e6 }))).toBe(true);
+    expect(clampPoint({ x: 5, y: -7 })).toEqual({ x: 5, y: -7 });
   });
 
   it('범위 안의 값과 삭제는 그대로 둔다', () => {
