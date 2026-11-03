@@ -117,10 +117,29 @@ export class SyncClient {
     this.scheduleSend();
   }
 
+  // 바뀐 것이 있을 때만 보낸다. 보드는 도형이 바뀔 때마다(남의 커밋 포함) 같은 선택을 다시 알려 오는데,
+  // 그대로 보내면 모든 클라이언트가 커밋마다 presence 를 보내 방송량이 접속자 수의 제곱으로 늘었다.
   setPresence(update: { cursor?: Point | null; selection?: string[]; user?: User }): void {
-    if (update.cursor !== undefined) this.cursor = update.cursor;
-    if (update.selection !== undefined) this.selection = update.selection.slice(0, LIMITS.maxSelection);
-    if (update.user !== undefined) this.user = update.user;
+    let changed = false;
+    if (update.cursor !== undefined && !samePoint(update.cursor, this.cursor)) {
+      this.cursor = update.cursor;
+      changed = true;
+    }
+    if (update.selection !== undefined) {
+      const selection = update.selection.slice(0, LIMITS.maxSelection);
+      if (!sameIds(selection, this.selection)) {
+        this.selection = selection;
+        changed = true;
+      }
+    }
+    if (update.user !== undefined && (update.user.name !== this.user.name || update.user.color !== this.user.color)) {
+      this.user = update.user;
+      changed = true;
+    }
+    if (changed) this.schedulePresence();
+  }
+
+  private schedulePresence(): void {
     if (!this.ready || this.presenceTimer) return;
     const delay = Math.max(0, this.lastPresenceAt + this.sendIntervalMs - Date.now());
     this.presenceTimer = setTimeout(() => {
@@ -312,7 +331,12 @@ export class SyncClient {
     }
     this.confirmed = applyOps(this.confirmed, commit.ops);
     this.seq = commit.seq;
-    if (commit.clientId === this.clientId) this.dropAcknowledged(commit.clientSeq);
+    if (commit.clientId === this.clientId) {
+      this.dropAcknowledged(commit.clientSeq);
+      // 서버는 아직 확정되지 않은 도형 id 를 선택에서 거른다. 새로 그린 도형을 확정 전에 선택해 보냈다면
+      // 다른 사람에게는 빠진 채 전해졌으니, 그 도형이 확정되면 선택을 다시 보낸다.
+      if (commit.ops.some((op) => op.type === 'add' && this.selection.includes(op.shape.id))) this.schedulePresence();
+    }
     return true;
   }
 
@@ -383,4 +407,12 @@ function splitOps(ops: Op[]): Op[][] {
   }
   if (current.length > 0) batches.push(current);
   return batches;
+}
+
+function samePoint(a: Point | null, b: Point | null): boolean {
+  return a === b || (a !== null && b !== null && a.x === b.x && a.y === b.y);
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
 }
