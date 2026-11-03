@@ -13,6 +13,7 @@ export type ServerOptions = {
   dataDir: string;
   staticDir?: string; // 없으면 WebSocket만 제공한다(개발 모드에서는 Vite가 화면을 맡는다).
   saveDelayMs?: number;
+  saveRetryMs?: number; // 저장에 실패했을 때 다시 시도하기까지 기다리는 시간
   idleUnloadMs?: number;
   heartbeatMs?: number;
 };
@@ -23,7 +24,7 @@ export type RunningServer = {
 };
 
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
-  const { dataDir, saveDelayMs = 1000, idleUnloadMs = 30_000, heartbeatMs = 30_000 } = options;
+  const { dataDir, saveDelayMs = 1000, saveRetryMs = 5000, idleUnloadMs = 30_000, heartbeatMs = 30_000 } = options;
 
   // ---- 방 관리: 접속자가 있을 때만 메모리에 올리고, 변경은 잠시 모았다가 파일에 저장한다 ----
   const rooms = new Map<string, Room>();
@@ -53,12 +54,12 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     return pending;
   }
 
-  function markDirty(room: Room) {
+  function markDirty(room: Room, delayMs = saveDelayMs) {
     dirty.add(room);
     if (saveTimers.has(room)) return;
     saveTimers.set(
       room,
-      setTimeout(() => void flush(room), saveDelayMs),
+      setTimeout(() => void flush(room), delayMs),
     );
   }
 
@@ -72,7 +73,12 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const previous = saveChains.get(room.id) ?? Promise.resolve();
     const next = previous
       .then(() => saveRoom(dataDir, room.id, snapshot))
-      .catch((error: unknown) => console.error(`[save] room ${room.id} failed`, error));
+      .catch((error: unknown) => {
+        console.error(`[save] room ${room.id} failed`, error);
+        // 저장하지 못한 변경이 남았으니 다시 저장 대상으로 표시한다. 그대로 두면 새 변경이 없는 한 방을 내릴 때와
+        // 정상 종료 때의 flush 가 이 방을 저장할 것이 없다고 보고 넘어가, 확정된 변경이 사라진다.
+        if (!closing) markDirty(room, saveRetryMs);
+      });
     saveChains.set(room.id, next);
     return next;
   }
@@ -88,6 +94,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
         if (room.memberCount === 0 && !dirty.has(room)) {
           rooms.delete(room.id);
           saveChains.delete(room.id);
+        } else if (room.memberCount === 0) {
+          scheduleUnload(room); // 저장이 실패해 다시 시도를 기다리는 중이다. 저장된 뒤에 다시 내린다.
         }
       }, idleUnloadMs),
     );

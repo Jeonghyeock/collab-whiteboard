@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -97,5 +97,59 @@ describe('server', () => {
   it('확장자 없는 경로는 index.html로 보낸다 (SPA)', async () => {
     expect(await rawGet('/r/someBoard1')).toBe(200);
     expect(await rawGet('/missing.js')).toBe(404);
+  });
+});
+
+describe('저장', () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('저장이 한 번 실패해도 다시 시도해, 방을 내리기 전에 확정된 변경을 파일에 남긴다', async () => {
+    // 고치기 전에는 저장 실패 뒤 dirty 표시가 사라져, 새 변경이 없으면 방을 내릴 때도 다시 저장하지 않았다
+    const roomsDir = path.join(dataDir, 'retry-rooms');
+    const retryServer = await startServer({
+      port: 0,
+      dataDir: roomsDir,
+      saveDelayMs: 10,
+      saveRetryMs: 50,
+      idleUnloadMs: 30,
+    });
+    try {
+      // 임시 파일 자리에 폴더를 만들어 두면 저장(writeFile)이 EISDIR 로 실패한다
+      const blocker = path.join(roomsDir, 'retryRoom1.json.tmp');
+      await mkdir(blocker, { recursive: true });
+
+      const ws = new WebSocket(`ws://localhost:${retryServer.port}/ws`);
+      const received: string[] = [];
+      const waitFor = (type: string) =>
+        new Promise<void>((resolve) => {
+          const check = () => (received.includes(type) ? resolve() : setTimeout(check, 5));
+          check();
+        });
+      ws.onmessage = (event) => received.push(JSON.parse(String(event.data)).type);
+      ws.onopen = () => ws.send(JSON.stringify(hello('retryRoom1')));
+      await waitFor('welcome'); // hello 처리 전에 온 변경은 서버가 버린다
+      ws.send(
+        JSON.stringify({
+          type: 'mutate',
+          clientSeq: 1,
+          ops: [
+            {
+              type: 'add',
+              shape: { id: 'shape0001', type: 'rect', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, w: 10, h: 10, fill: null },
+            },
+          ],
+        }),
+      );
+      await waitFor('commit');
+      ws.close(); // 아무도 없으니 곧 방을 내리려 한다
+      await sleep(150); // 첫 저장과 방 내리기 직전 저장이 실패할 시간
+
+      await rm(blocker, { recursive: true });
+      await sleep(300); // 다시 시도해 저장할 시간
+      const saved = JSON.parse(await readFile(path.join(roomsDir, 'retryRoom1.json'), 'utf8'));
+      expect(Object.keys(saved.shapes)).toEqual(['shape0001']);
+    } finally {
+      await retryServer.close();
+    }
   });
 });
