@@ -7,4 +7,6 @@ export const LIMITS = {
   maxSelection: 500,
   maxMembersPerRoom: 50,
   maxMessageBytes: 1024 * 1024,
+  maxCoord: 1e6, // 좌표·크기의 절댓값 상한 (protocol.ts 스키마와 클라이언트 clampOps 가 함께 쓴다)
+  maxZ: 1e9, // 쌓임 순서(z)의 절댓값 상한
 } as const;
