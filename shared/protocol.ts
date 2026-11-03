@@ -9,15 +9,15 @@ export const ShapeIdSchema = z.string().regex(/^[A-Za-z0-9]{8,40}$/);
 export const RoomIdSchema = z.string().regex(/^[A-Za-z0-9]{6,40}$/);
 export const ClientSecretSchema = z.string().regex(/^[A-Za-z0-9]{16,64}$/);
 
-const Coord = z.number().min(-1e6).max(1e6);
-const Size = z.number().min(0).max(1e6);
+const Coord = z.number().min(-LIMITS.maxCoord).max(LIMITS.maxCoord);
+const Size = z.number().min(0).max(LIMITS.maxCoord);
 const Color = z.string().regex(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/);
 
 const shapeBase = {
   id: ShapeIdSchema,
   x: Coord,
   y: Coord,
-  z: z.number().min(-1e9).max(1e9), // 쌓임 순서. 같으면 id로 정렬한다.
+  z: z.number().min(-LIMITS.maxZ).max(LIMITS.maxZ), // 쌓임 순서. 같으면 id로 정렬한다.
   stroke: Color,
   strokeWidth: z.number().min(1).max(64),
 };

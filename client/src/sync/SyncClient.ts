@@ -11,6 +11,7 @@ import type {
   User,
 } from '../../../shared/protocol.ts';
 import { randomId } from '../lib/id.ts';
+import { clampOps } from './clampOps.ts';
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline';
 
@@ -105,8 +106,10 @@ export class SyncClient {
   // ---- 변경 ----
 
   // 화면에는 즉시 반영하고(낙관적 업데이트), 서버에는 sendIntervalMs마다 모아서 보낸다.
-  mutate(ops: Op[]): void {
-    if (ops.length === 0 || this.closed) return;
+  // 스키마 범위 밖 값은 먼저 잘라, 화면과 서버가 같은 값을 갖게 한다(clampOps).
+  mutate(input: Op[]): void {
+    if (input.length === 0 || this.closed) return;
+    const ops = clampOps(input);
     const last = this.pending.at(-1);
     if (last && last.clientSeq === null) {
       last.ops = compressOps([...last.ops, ...ops]);
