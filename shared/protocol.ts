@@ -47,9 +47,16 @@ const LineSchema = z.strictObject({
 // (x, y) 기준 상대 좌표를 [x0, y0, x1, y1, ...]로 평탄화. 이동은 x, y만 바꾸면 된다.
 // 원소를 하나씩 스키마로 검사하지 않고 한 번에 본다. z.array(Coord) 는 잘못된 원소마다 이슈 객체를 만들어,
 // 1MB 안쪽 메시지 하나(펜 500개 × 잘못된 좌표)로 이슈 30만여 개·힙 약 200MB 를 쓰고 이벤트 루프를 수백 ms 멈췄다.
-const isCoord = (v: unknown) => typeof v === 'number' && v >= -1e6 && v <= 1e6;
+// 범위는 Coord 스키마의 값을 그대로 쓴다. 빈 칸(희소 배열)도 거르도록 every 대신 인덱스로 돈다.
+const isCoords = (p: unknown[]) => {
+  for (let i = 0; i < p.length; i++) {
+    const v = p[i];
+    if (typeof v !== 'number' || v < Coord.minValue! || v > Coord.maxValue!) return false;
+  }
+  return true;
+};
 const PenPoints = z.custom<number[]>(
-  (p) => Array.isArray(p) && p.length <= LIMITS.maxPenCoords && p.length % 2 === 0 && p.every(isCoord),
+  (p) => Array.isArray(p) && p.length <= LIMITS.maxPenCoords && p.length % 2 === 0 && isCoords(p),
   `좌표는 범위 안의 숫자 ${LIMITS.maxPenCoords}개 이하, 짝수 개여야 합니다`,
 );
 const PenSchema = z.strictObject({
