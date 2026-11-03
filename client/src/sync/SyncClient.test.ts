@@ -230,4 +230,42 @@ describe('SyncClient + server', () => {
     const observer = connect(room, 'observer');
     expect(await converged(observer)).toEqual(shapes);
   });
+
+  it('같은 선택을 다시 알려도 presence 를 다시 보내지 않는다', async () => {
+    // 보드는 도형이 바뀔 때마다(남의 커밋 포함) 같은 선택을 다시 알린다. 고치기 전에는 그때마다 presence 가 나갔다.
+    const room = roomId();
+    const a = connect(room, 'a');
+    const b = connect(room, 'b');
+    await online(a, b);
+    a.mutate([{ type: 'add', shape: rect('shape001') }]);
+    await converged(a, b);
+    a.setPresence({ selection: ['shape001'] });
+    await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual(['shape001']));
+
+    let received = 0;
+    let last = b.getState().peers;
+    b.subscribe(() => {
+      if (b.getState().peers !== last) received += 1;
+      last = b.getState().peers;
+    });
+    for (let i = 0; i < 5; i++) {
+      b.mutate([{ type: 'update', id: 'shape001', patch: { x: i } }]); // 남의 커밋
+      a.setPresence({ selection: ['shape001'] }); // 보드가 다시 알리는 것과 같다
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await converged(a, b);
+    expect(received).toBe(0);
+  });
+
+  it('새로 그린 도형을 확정 전에 선택해도, 확정된 뒤 그 선택이 다른 사람에게 보인다', async () => {
+    // 서버는 아직 없는 도형 id 를 선택에서 거른다. 내 추가가 확정되면 선택을 다시 보내야 한다.
+    const room = roomId();
+    const a = connect(room, 'a');
+    const b = connect(room, 'b');
+    await online(a, b);
+    a.setPresence({ selection: ['shape002'] }); // 추가보다 먼저 선택을 알린다 → 서버가 거른다
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    a.mutate([{ type: 'add', shape: rect('shape002') }]);
+    await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual(['shape002']));
+  });
 });
