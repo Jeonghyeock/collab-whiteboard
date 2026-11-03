@@ -1,6 +1,6 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { WebSocket, WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { LIMITS } from '../shared/limits.ts';
 import { ClientMessageSchema } from '../shared/protocol.ts';
 import { Room, type Connection } from './room.ts';
@@ -160,7 +160,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       if (!room) ws.close(1008, 'hello timeout');
     }, 10_000);
 
-    ws.on('message', async (data, isBinary) => {
+    const handleMessage = async (data: RawData, isBinary: boolean) => {
       alive.add(ws);
       if (isBinary) {
         ws.close(1003, 'binary messages are not supported');
@@ -204,6 +204,14 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       }
       // hello가 처리되기 전에 온 메시지는 버린다. 클라이언트는 welcome을 받은 뒤에만 변경을 보낸다.
       room?.handle(conn, message);
+    };
+    // 메시지 처리 중 예상하지 못한 예외(검증 라이브러리의 버그 등)가 나도 그 연결만 닫는다.
+    // async 리스너의 예외는 처리되지 않은 rejection이 되어 서버 프로세스 전체가 죽는다(zod 4.6.5 RangeError로 재현).
+    ws.on('message', (data, isBinary) => {
+      handleMessage(data, isBinary).catch((error: unknown) => {
+        console.error('[ws] message handling failed', error);
+        ws.close(1011, 'internal error');
+      });
     });
 
     ws.on('close', () => {
