@@ -109,3 +109,47 @@ test('새로고침해도 보드가 그대로 남아 있다', async ({ browser })
   await expect(a.page.locator('.status-online')).toBeVisible();
   await expect(shapes(a.page)).toHaveCount(1);
 });
+
+test('보내지 못한 변경이 있으면 앱 안에서 보드를 떠나기 전에 확인한다', async ({ browser }) => {
+  // 고치기 전에는 로고·뒤로 가기가 pushState 이동이라 확인 없이 보드를 닫으며 대기 중인 변경을 버렸다
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto('/');
+    await page.getByRole('button', { name: '새 보드 만들기' }).click();
+    await expect(page.locator('.status-online')).toBeVisible();
+    const boardUrl = page.url();
+
+    await context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(page.locator('.status-offline')).toBeVisible();
+    await page.keyboard.press('r');
+    await drag(page, [300, 300], [450, 400]);
+    await expect(page.locator('.status-pending')).toContainText('전송 대기 1');
+
+    let answer = false;
+    const asked: string[] = [];
+    page.on('dialog', async (dialog) => {
+      asked.push(dialog.message());
+      await (answer ? dialog.accept() : dialog.dismiss());
+    });
+
+    const historyLength = await page.evaluate(() => history.length);
+    await page.goBack(); // 브라우저 뒤로 가기 → 머문다
+    await expect(page).toHaveURL(boardUrl);
+    // 머물 때 새 항목을 쌓지 않고 원래 항목으로 돌아온다(기록이 겹치거나 앞쪽이 잘리지 않음)
+    expect(await page.evaluate(() => history.length)).toBe(historyLength);
+    await page.locator('.brand').click(); // 로고 → 머문다
+    await expect(page).toHaveURL(boardUrl);
+    await expect(shapes(page)).toHaveCount(1);
+    await expect(page.locator('.status-pending')).toContainText('전송 대기 1');
+    expect(asked).toHaveLength(2);
+
+    answer = true;
+    await page.locator('.brand').click(); // 이번에는 떠난다
+    await expect(page.getByRole('button', { name: '새 보드 만들기' })).toBeVisible();
+    expect(asked).toHaveLength(3);
+  } finally {
+    await context.close();
+  }
+});

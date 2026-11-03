@@ -178,6 +178,17 @@ describe('SyncClient + server', () => {
     expect(a.getState().pendingCount).toBe(0);
   });
 
+  it('온라인에서 닫으면 아직 보내지 않은 변경을 마저 보낸다', async () => {
+    // 고치기 전에는 close() 가 전송 타이머만 지워, 보드를 떠나기 직전 50ms 사이의 변경이 버려졌다
+    const room = roomId();
+    const a = connect(room, 'a');
+    const b = connect(room, 'b');
+    await online(a, b);
+    a.mutate([{ type: 'add', shape: rect('shape003') }]);
+    a.close();
+    await vi.waitFor(() => expect(Object.keys(b.getState().shapes)).toEqual(['shape003']));
+  });
+
   it('서버가 재시작돼도 보드가 남아 있고, 클라이언트는 알아서 다시 붙는다', async () => {
     const room = roomId();
     const a = connect(room);
