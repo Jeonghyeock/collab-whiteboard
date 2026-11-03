@@ -331,12 +331,10 @@ export class SyncClient {
     }
     this.confirmed = applyOps(this.confirmed, commit.ops);
     this.seq = commit.seq;
-    if (commit.clientId === this.clientId) {
-      this.dropAcknowledged(commit.clientSeq);
-      // 서버는 아직 확정되지 않은 도형 id 를 선택에서 거른다. 새로 그린 도형을 확정 전에 선택해 보냈다면
-      // 다른 사람에게는 빠진 채 전해졌으니, 그 도형이 확정되면 선택을 다시 보낸다.
-      if (commit.ops.some((op) => op.type === 'add' && this.selection.includes(op.shape.id))) this.schedulePresence();
-    }
+    if (commit.clientId === this.clientId) this.dropAcknowledged(commit.clientSeq);
+    // 서버는 그 시점에 방에 없는 도형 id 를 선택에서 거른다. 내가 새로 그려 확정 전에 선택한 도형이나, 남이 지웠다가
+    // 실행 취소로 되살린 도형이 그렇다. 선택한 도형이 (다시) 추가되면 다른 사람에게 빠진 채 전해졌을 수 있으니 다시 보낸다.
+    if (commit.ops.some((op) => op.type === 'add' && this.selection.includes(op.shape.id))) this.schedulePresence();
     return true;
   }
 

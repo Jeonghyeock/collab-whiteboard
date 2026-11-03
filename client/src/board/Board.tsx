@@ -45,7 +45,15 @@ export function Board({ roomId, client, history, user, onRename }: BoardProps) {
   const finishedEdits = useRef(new WeakSet<TextEditing>());
 
   // 남이 지웠거나 실행 취소로 사라진 도형은 선택에서 뺀다.
-  const selectedIds = useMemo(() => selected.filter((id) => Object.hasOwn(shapes, id)), [selected, shapes]);
+  // 도형이 바뀔 때마다(남의 커밋 포함) 새 배열을 만들면 선택을 쓰는 effect·메모가 매번 다시 돈다. 내용이 같으면 이전 배열을 쓴다.
+  const selectedRef = useRef<string[]>([]);
+  const selectedIds = useMemo(() => {
+    const next = selected.filter((id) => Object.hasOwn(shapes, id));
+    const prev = selectedRef.current;
+    if (next.length === prev.length && next.every((id, i) => id === prev[i])) return prev;
+    selectedRef.current = next;
+    return next;
+  }, [selected, shapes]);
 
   const showToast = useCallback((text: string) => setToast({ id: Date.now(), text }), []);
 

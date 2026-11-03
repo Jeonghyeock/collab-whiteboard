@@ -253,8 +253,47 @@ describe('SyncClient + server', () => {
     const b = connect(room, 'b');
     await online(a, b);
     a.setPresence({ selection: ['shape002'] }); // 추가보다 먼저 선택을 알린다 → 서버가 거른다
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual([])); // 걸러진 채 도착
     a.mutate([{ type: 'add', shape: rect('shape002') }]);
     await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual(['shape002']));
+  });
+
+  it('남이 지운 선택 도형이 다시 추가되면 선택을 다시 보낸다', async () => {
+    const room = roomId();
+    const a = connect(room, 'a');
+    const b = connect(room, 'b');
+    await online(a, b);
+    a.mutate([{ type: 'add', shape: rect('shape004') }]);
+    await converged(a, b);
+    b.mutate([{ type: 'delete', id: 'shape004' }]); // B 가 지움
+    await converged(a, b);
+    a.setPresence({ selection: ['shape004'] }); // 지워진 뒤라 서버가 거른다
+    await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual([]));
+    b.mutate([{ type: 'add', shape: rect('shape004') }]); // B 가 실행 취소로 되살림
+    await vi.waitFor(() => expect([...b.getState().peers.values()][0]?.selection).toEqual(['shape004']));
+  });
+
+  it('커서·이름이 실제로 바뀔 때만 보내고, 같은 값 뒤의 진짜 변경은 보낸다', async () => {
+    const room = roomId();
+    const a = connect(room, 'a');
+    const b = connect(room, 'b');
+    await online(a, b);
+    const peer = () => [...b.getState().peers.values()][0];
+    a.setPresence({ cursor: { x: 1, y: 2 } });
+    await vi.waitFor(() => expect(peer()?.cursor).toEqual({ x: 1, y: 2 }));
+
+    let received = 0;
+    let last = b.getState().peers;
+    b.subscribe(() => {
+      if (b.getState().peers !== last) received += 1;
+      last = b.getState().peers;
+    });
+    a.setPresence({ cursor: { x: 1, y: 2 }, user: { name: 'a', color: '#336699' } }); // 같은 값
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toBe(0);
+    a.setPresence({ cursor: { x: 3, y: 4 } });
+    await vi.waitFor(() => expect(peer()?.cursor).toEqual({ x: 3, y: 4 }));
+    a.setPresence({ user: { name: 'a2', color: '#336699' } });
+    await vi.waitFor(() => expect(peer()?.user.name).toBe('a2'));
   });
 });
