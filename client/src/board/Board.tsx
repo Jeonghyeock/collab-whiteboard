@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { LoaderCircle } from 'lucide-react';
 import type { Op, Shape, User } from '../../../shared/protocol.ts';
 import { randomId } from '../lib/id.ts';
+import { setLeaveGuard } from '../lib/router.ts';
 import type { History } from '../sync/History.ts';
 import type { SyncClient } from '../sync/SyncClient.ts';
 import { BottomBar } from './BottomBar.tsx';
@@ -86,6 +87,21 @@ export function Board({ roomId, client, history, user, onRename }: BoardProps) {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [client]);
+
+  // 앱 안에서 떠날 때(로고, 브라우저 뒤로 가기)도 확인을 받는다. 오프라인에서 그린 뒤 로고를 누르면 보드를 닫으며
+  // 대기열을 버려 경고 없이 사라졌다. 온라인이면 닫을 때 남은 변경을 마저 보내므로(SyncClient.close) 묻지 않는다.
+  useEffect(
+    () =>
+      setLeaveGuard(() => {
+        const { status, pendingCount } = client.getState();
+        return (
+          pendingCount === 0 ||
+          status === 'online' ||
+          window.confirm('아직 서버에 보내지 못한 변경이 있어요. 지금 떠나면 사라집니다. 떠날까요?')
+        );
+      }),
+    [client],
+  );
 
   function viewport() {
     const rect = svgRef.current?.getBoundingClientRect();

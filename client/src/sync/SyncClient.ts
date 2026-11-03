@@ -152,6 +152,9 @@ export class SyncClient {
   }
 
   close(): void {
+    // 연결돼 있으면 아직 보내지 않은 묶음을 닫기 전에 보낸다(보낸 프레임은 close 보다 먼저 서버에 닿는다).
+    // 그러지 않으면 온라인에서도 마지막 50ms 사이의 변경(예: 글 고친 직후 보드를 떠남)이 버려졌다.
+    if (this.ready) this.flushUnsent();
     this.closed = true;
     for (const timer of [this.reconnectTimer, this.sendTimer, this.presenceTimer]) {
       if (timer) clearTimeout(timer);
