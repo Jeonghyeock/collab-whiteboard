@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { applyOps, PATCH_KEYS } from '../shared/doc.ts';
+import { applyOps, opTargetId, PATCH_KEYS } from '../shared/doc.ts';
 import { LIMITS } from '../shared/limits.ts';
 import type {
   ClientMessage,
@@ -8,6 +8,7 @@ import type {
   Op,
   Presence,
   ServerMessage,
+  Shape,
   ShapeType,
   Shapes,
 } from '../shared/protocol.ts';
@@ -37,6 +38,18 @@ function publicIdOf(clientSecret: string): string {
   return createHash('sha256').update(clientSecret).digest('hex').slice(0, 24);
 }
 
+// 방 크기 어림. 도형 하나가 JSON 에서 펜 좌표·글 말고 차지하는 크기(도형 맵의 "id": 와 쉼표 포함)는 id 40자,
+// 숫자마다 가장 긴 표기 24자(예: -1.2345678901234567e-300)로 쳐도 약 330바이트라 넉넉히 400 으로 친다.
+// 크게 커질 수 있는 값은 펜 좌표와 글뿐이라 그 둘만 실제로 잰다. 그래서 어림은 실제 JSON 크기보다 작지 않다.
+const SHAPE_OVERHEAD_BYTES = 400;
+function shapeBytes(shape: Shape): number {
+  if (shape.type === 'pen') return SHAPE_OVERHEAD_BYTES + JSON.stringify(shape.points).length;
+  if (shape.type === 'text') return SHAPE_OVERHEAD_BYTES + Buffer.byteLength(JSON.stringify(shape.text));
+  return SHAPE_OVERHEAD_BYTES;
+}
+// 이 값이 그대로면(이동·색 바꾸기 등) 도형 크기 어림도 그대로다.
+const bulkOf = (shape: Shape) => (shape.type === 'pen' ? shape.points : shape.type === 'text' ? shape.text : null);
+
 // 방 하나의 권위 있는 상태. 모든 변경은 여기서 순서(seq)가 정해진다.
 export class Room {
   readonly id: string;
@@ -51,16 +64,26 @@ export class Room {
   private log: Commit[] = [];
   private readonly logLimit: number;
   private members = new Map<Connection, Member>();
+  // 도형 크기 어림(shapeBytes)의 합과 도형별 값. 변경마다 방 전체를 직렬화하지 않고, 바뀐 도형만 다시 잰다.
+  private bytes = 0;
+  private shapeSizes = new Map<string, number>();
+  private readonly maxBytes: number;
 
   // 상태가 바뀔 때마다 호출된다(저장 예약용).
   onChange: (() => void) | null = null;
 
-  constructor(id: string, snapshot?: RoomSnapshot, options: { logLimit?: number } = {}) {
+  constructor(id: string, snapshot?: RoomSnapshot, options: { logLimit?: number; maxBytes?: number } = {}) {
     this.id = id;
     this.seq = snapshot?.seq ?? 0;
     this.shapes = snapshot?.shapes ?? {};
     this.lastClientSeq = new Map(Object.entries(snapshot?.lastClientSeq ?? {}));
     this.logLimit = options.logLimit ?? 1000;
+    this.maxBytes = options.maxBytes ?? LIMITS.maxRoomBytes;
+    for (const [shapeId, shape] of Object.entries(this.shapes)) {
+      const size = shapeBytes(shape);
+      this.shapeSizes.set(shapeId, size);
+      this.bytes += size;
+    }
   }
 
   get memberCount(): number {
@@ -155,13 +178,24 @@ export class Room {
 
     const error = this.validate(message.ops);
     const next = error ? null : applyOps(this.shapes, message.ops);
-    if (error || !next || Object.keys(next).length > LIMITS.maxShapesPerRoom) {
-      conn.send({ type: 'reject', clientSeq: message.clientSeq, reason: error ?? 'too many shapes' });
+    // 방 크기 상한. 도형 수만 막으면 스키마 한도 안의 펜(긴 숫자 표기의 좌표)만으로 방 JSON 이 V8 문자열 최대 길이를 넘어,
+    // 저장과 새로 들어온 사람의 스냅샷 welcome 이 영영 실패했다. 이미 상한을 넘은 방(상한이 생기기 전 저장 파일)도
+    // 크기를 늘리지 않는 변경(이동·삭제 등)은 받는다.
+    const sized = next && this.sizeAfter(next, message.ops);
+    const tooLarge = !!sized && sized.bytes > this.maxBytes && sized.bytes > this.bytes;
+    if (error || !next || !sized || Object.keys(next).length > LIMITS.maxShapesPerRoom || tooLarge) {
+      const reason = error ?? (tooLarge ? 'room is too large' : 'too many shapes');
+      conn.send({ type: 'reject', clientSeq: message.clientSeq, reason });
       this.onChange?.(); // lastClientSeq가 바뀌었으므로 저장 대상이다.
       return;
     }
 
     this.shapes = next;
+    this.bytes = sized.bytes;
+    for (const [shapeId, size] of sized.sizes) {
+      if (size === 0) this.shapeSizes.delete(shapeId);
+      else this.shapeSizes.set(shapeId, size);
+    }
     this.seq += 1;
     const commit: Commit = { seq: this.seq, clientId, clientSeq: message.clientSeq, ops: message.ops };
     this.log.push(commit);
@@ -197,6 +231,24 @@ export class Room {
       }
     }
     return null;
+  }
+
+  // 묶음을 적용한 뒤의 방 크기 어림. 건드린 도형만 다시 재고, 펜 좌표·글이 그대로인 도형은 이전 값을 쓴다.
+  // 그래서 새로 재는 값은 모두 이번 메시지에 담겨 온 것이라, 드는 시간이 메시지 크기에 비례한다.
+  private sizeAfter(next: Shapes, ops: readonly Op[]): { bytes: number; sizes: Map<string, number> } {
+    const sizes = new Map<string, number>(); // 0: 지워짐
+    let bytes = this.bytes;
+    for (const op of ops) {
+      const id = opTargetId(op);
+      if (sizes.has(id)) continue;
+      const before = Object.hasOwn(this.shapes, id) ? this.shapes[id] : undefined;
+      const after = Object.hasOwn(next, id) ? next[id] : undefined;
+      const old = this.shapeSizes.get(id) ?? 0;
+      const size = !after ? 0 : before && bulkOf(before) === bulkOf(after) ? old : shapeBytes(after);
+      sizes.set(id, size);
+      bytes += size - old;
+    }
+    return { bytes, sizes };
   }
 
   private broadcast(message: ServerMessage, except?: Connection): void {

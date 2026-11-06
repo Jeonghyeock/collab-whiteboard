@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Room, type Connection } from './room.ts';
+import { Room, type Connection, type RoomSnapshot } from './room.ts';
 import type { ClientMessage, HelloMessage, ServerMessage, Shape } from '../shared/protocol.ts';
 
 class FakeConnection implements Connection {
@@ -261,5 +261,85 @@ describe('Room', () => {
     restored.join(conn, hello('clientAAA', 1));
     restored.handle(conn, { type: 'mutate', clientSeq: 1, ops: [{ type: 'delete', id: 'shape001' }] });
     expect(restored.toSnapshot()).toMatchObject({ seq: 1, shapes: { shape001: {} } });
+  });
+});
+
+describe('Room 크기 상한', () => {
+  // 범위(±1e6) 안이지만 JSON 으로 가장 긴 숫자(24자). 좌표 1000개짜리 펜 하나가 약 25KB 다.
+  const longCoord = -1.2345678901234567e-300;
+  const points = new Array(1000).fill(longCoord);
+  const pen = (id: string): Shape => ({ id, type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points });
+  const maxBytes = 64 * 1024; // 펜 둘은 들어가고 셋은 넘는다
+  const bytesOf = (room: Room) => Buffer.byteLength(JSON.stringify(room.toSnapshot().shapes));
+
+  function setupSized(snapshot?: RoomSnapshot) {
+    const room = new Room('room0001', snapshot, { maxBytes });
+    const a = new FakeConnection();
+    const b = new FakeConnection();
+    room.join(a, hello('clientAAA'));
+    room.join(b, hello('clientBBB'));
+    return { room, a, b };
+  }
+
+  it('방을 상한보다 크게 만드는 변경은 거부하고, 상태와 크기 셈은 그대로 둔다', () => {
+    const { room, a, b } = setupSized();
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape: pen('penshape1') }, { type: 'add', shape: pen('penshape2') }] });
+    expect(a.last('reject')).toBeUndefined();
+    // 고치기 전에는 도형 수만 봐서, 스키마 한도 안의 펜으로 방을 얼마든지 키울 수 있었다
+    room.handle(a, { type: 'mutate', clientSeq: 2, ops: [{ type: 'add', shape: pen('penshape3') }] });
+    expect(a.last('reject')).toEqual({ type: 'reject', clientSeq: 2, reason: 'room is too large' });
+    room.handle(a, { type: 'mutate', clientSeq: 3, ops: [{ type: 'update', id: 'penshape1', patch: { points: [...points, ...points] } }] });
+    expect(a.last('reject')).toMatchObject({ clientSeq: 3, reason: 'room is too large' });
+    expect(b.received.filter((m) => m.type === 'commit')).toHaveLength(1);
+    expect(Object.keys(room.toSnapshot().shapes)).toEqual(['penshape1', 'penshape2']);
+
+    // 크기를 늘리지 않는 변경은 받고, 하나를 지우면 그만큼 다시 넣을 수 있다(거부한 묶음은 크기 셈에 남지 않는다)
+    room.handle(a, {
+      type: 'mutate',
+      clientSeq: 4,
+      ops: [
+        { type: 'update', id: 'penshape1', patch: { x: 10 } },
+        { type: 'delete', id: 'penshape2' },
+      ],
+    });
+    room.handle(a, { type: 'mutate', clientSeq: 5, ops: [{ type: 'add', shape: pen('penshape3') }] });
+    expect(a.last('reject')?.clientSeq).toBe(3);
+    expect(Object.keys(room.toSnapshot().shapes)).toEqual(['penshape1', 'penshape3']);
+    expect(bytesOf(room)).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it('크기 어림은 실제 JSON 크기보다 작지 않다(가장 긴 숫자·id, 이스케이프되는 글, 한글)', () => {
+    const { room, a } = setupSized();
+    const id = (n: number) => `${'x'.repeat(36)}${String(n).padStart(4, '0')}`; // 40자
+    const base = { x: longCoord, y: longCoord, z: longCoord, stroke: '#ffffffff', strokeWidth: 1.0000000000000002 };
+    const shapes: Shape[] = [];
+    for (let n = 0; shapes.length < 400; n++) {
+      const kind = n % 5;
+      const common = { id: id(n), ...base };
+      if (kind === 0) shapes.push({ ...common, type: 'rect', w: 1.2345678901234567e-300, h: 1.2345678901234567e-300, fill: '#ffffffff' });
+      if (kind === 1) shapes.push({ ...common, type: 'ellipse', w: 1.2345678901234567e-300, h: 1.2345678901234567e-300, fill: '#ffffffff' });
+      if (kind === 2) shapes.push({ ...common, type: 'line', dx: longCoord, dy: longCoord, arrow: false });
+      if (kind === 3) shapes.push({ ...common, type: 'pen', points: [longCoord, longCoord] });
+      if (kind === 4) shapes.push({ ...common, type: 'text', text: '\u0001가"\\', fontSize: 8.000000000000002 });
+    }
+    let clientSeq = 0;
+    for (let i = 0; i < shapes.length; i += 20) {
+      room.handle(a, { type: 'mutate', clientSeq: ++clientSeq, ops: shapes.slice(i, i + 20).map((shape) => ({ type: 'add' as const, shape })) });
+    }
+    expect(a.last('reject')).toMatchObject({ reason: 'room is too large' });
+    expect(bytesOf(room)).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it('상한을 이미 넘은 방(상한이 생기기 전 저장 파일)도 크기를 늘리지 않는 변경은 받는다', () => {
+    const shapes = { penshape1: pen('penshape1'), penshape2: pen('penshape2'), penshape3: pen('penshape3') };
+    const { room, a } = setupSized({ seq: 1, shapes, lastClientSeq: {} });
+    room.handle(a, { type: 'mutate', clientSeq: 1, ops: [{ type: 'update', id: 'penshape1', patch: { x: 10 } }] });
+    expect(a.last('reject')).toBeUndefined();
+    room.handle(a, { type: 'mutate', clientSeq: 2, ops: [{ type: 'add', shape: rect('shape001') }] });
+    expect(a.last('reject')).toMatchObject({ clientSeq: 2, reason: 'room is too large' });
+    room.handle(a, { type: 'mutate', clientSeq: 3, ops: [{ type: 'delete', id: 'penshape3' }] });
+    room.handle(a, { type: 'mutate', clientSeq: 4, ops: [{ type: 'add', shape: rect('shape001') }] });
+    expect(a.last('reject')?.clientSeq).toBe(2);
+    expect(room.toSnapshot().seq).toBe(4);
   });
 });

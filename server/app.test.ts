@@ -1,11 +1,28 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket as WsClient } from 'ws';
+import { LIMITS } from '../shared/limits.ts';
+import type { ServerMessage } from '../shared/protocol.ts';
 import { startServer, type RunningServer } from './app.ts';
+import { Room } from './room.ts';
+
+// 저장 함수가 던지는 오류를 정할 수 있게 한다(error 가 없으면 그대로 저장한다). 부른 횟수도 센다.
+const storage = vi.hoisted(() => ({ error: null as Error | null, calls: 0 }));
+vi.mock('./storage.ts', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./storage.ts')>();
+  return {
+    ...original,
+    saveRoom: async (...args: Parameters<typeof original.saveRoom>) => {
+      storage.calls += 1;
+      if (storage.error) throw storage.error;
+      return original.saveRoom(...args);
+    },
+  };
+});
 
 let server: RunningServer;
 let dataDir: string;
@@ -291,4 +308,114 @@ describe('느리거나 응답하지 않는 연결', () => {
       reader.ws.terminate();
     });
   }, 30_000);
+});
+
+describe('방 크기 상한', () => {
+  async function join(port: number, roomId: string, clientSecret: string) {
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    const messages: ServerMessage[] = [];
+    ws.onmessage = (event) => messages.push(JSON.parse(String(event.data)));
+    await new Promise<void>((resolve) => (ws.onopen = () => resolve()));
+    ws.send(JSON.stringify({ ...hello(roomId), clientSecret }));
+    await vi.waitFor(() => expect(messages.some((m) => m.type === 'welcome')).toBe(true));
+    const welcome = messages.find((m) => m.type === 'welcome') as Extract<ServerMessage, { type: 'welcome' }>;
+    return { ws, messages, welcome };
+  }
+
+  it('조작한 펜으로 방을 키워도 상한에서 거부하고, 저장 파일과 새로 들어온 사람의 스냅샷은 그대로 만든다', async () => {
+    // 고치기 전에는 펜 2,684개(mutate 537번)면 방 JSON 이 V8 문자열 최대 길이를 넘어, 저장과 새 입장 welcome 이 영영 실패했다.
+    // 같은 모양의 펜(범위 안에서 가장 긴 숫자 표기, 메시지 하나에 5개 약 1MB)을 실제 상한까지 보내 본다.
+    const roomsDir = path.join(dataDir, 'large-rooms');
+    // 파일을 읽는 동안 rename 이 실패할 수 있어(Windows) 다시 시도를 짧게 둔다
+    const s = await startServer({ port: 0, dataDir: roomsDir, saveDelayMs: 50, saveRetryMs: 50 });
+    try {
+      const sender = await join(s.port, 'largeRoom1', 'secretLargeSender01');
+      const points = new Array(LIMITS.maxPenCoords).fill(-1.2345678901234567e-300); // 펜 하나 약 200KB
+      const pen = (id: string) => ({ id, type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points });
+      const answerTo = (clientSeq: number) =>
+        sender.messages.find(
+          (m) => (m.type === 'commit' && m.commit.clientSeq === clientSeq) || (m.type === 'reject' && m.clientSeq === clientSeq),
+        );
+      let committed = 0;
+      let rejected: ServerMessage | undefined;
+      for (let clientSeq = 1; clientSeq <= 30 && !rejected; clientSeq++) {
+        const ops = Array.from({ length: 5 }, (_, i) => ({ type: 'add', shape: pen(`pen${clientSeq}n${i}abcd`) }));
+        sender.ws.send(JSON.stringify({ type: 'mutate', clientSeq, ops }));
+        await vi.waitFor(() => expect(answerTo(clientSeq)).toBeDefined(), { timeout: 5000 });
+        if (answerTo(clientSeq)?.type === 'reject') rejected = answerTo(clientSeq);
+        else committed += ops.length;
+      }
+      expect(rejected).toMatchObject({ type: 'reject', reason: 'room is too large' });
+      expect(committed).toBeGreaterThan(0);
+
+      const file = path.join(roomsDir, 'largeRoom1.json');
+      await vi.waitFor(async () => expect(Object.keys(JSON.parse(await readFile(file, 'utf8')).shapes)).toHaveLength(committed), {
+        timeout: 5000,
+      });
+      expect((await stat(file)).size).toBeLessThanOrEqual(LIMITS.maxRoomBytes + 1024);
+      const newcomer = await join(s.port, 'largeRoom1', 'secretLargeJoiner01');
+      expect(newcomer.welcome.sync.kind === 'snapshot' && Object.keys(newcomer.welcome.sync.shapes)).toHaveLength(committed);
+      sender.ws.close();
+      newcomer.ws.close();
+    } finally {
+      await s.close();
+    }
+  }, 30_000);
+
+  it('입장 처리 중 실패해도(welcome 을 만들지 못하는 등) 아무도 없는 방을 메모리에 남기지 않는다', async () => {
+    // 고치기 전에는 내리기를 취소한 뒤 join 이 던지면 연결에 방이 정해지지 않아, 연결이 닫혀도 내리기를 다시 예약하지 않았다
+    const s = await startServer({ port: 0, dataDir: path.join(dataDir, 'join-fail-rooms'), idleUnloadMs: 30 });
+    let failedEpoch: string | undefined;
+    const spy = vi.spyOn(Room.prototype, 'join').mockImplementationOnce(function (this: Room) {
+      failedEpoch = this.epoch;
+      throw new RangeError('Invalid string length'); // 방이 너무 커 welcome 을 JSON 으로 만들지 못한 경우
+    });
+    try {
+      const ws = new WebSocket(`ws://localhost:${s.port}/ws`);
+      const code = await new Promise<number>((resolve) => {
+        ws.onopen = () => ws.send(JSON.stringify(hello('joinFail01')));
+        ws.onclose = (event) => resolve(event.code);
+      });
+      expect(code).toBe(1011);
+      expect(failedEpoch).toBeDefined();
+      await new Promise((resolve) => setTimeout(resolve, 200)); // 내리기(30ms)가 돌 시간
+      const again = await join(s.port, 'joinFail01', 'secretJoinAgain0001');
+      expect(again.welcome.epoch).not.toBe(failedEpoch); // 내려간 뒤 새로 올린 방
+      again.ws.close();
+    } finally {
+      spy.mockRestore();
+      await s.close();
+    }
+  });
+
+  it('방을 JSON 으로 만들 수 없어 저장이 실패하면(RangeError) 다시 시도하지 않고, 아무도 없으면 방을 내린다', async () => {
+    // 고치기 전에는 다시 해도 똑같이 실패할 저장을 끝없이 다시 시도했고(그때마다 큰 직렬화로 이벤트 루프가 멈춤),
+    // 저장하지 못한 변경이 남아 방을 내리지 못했으며 종료할 때도 실패(exit 1)했다
+    const s = await startServer({
+      port: 0,
+      dataDir: path.join(dataDir, 'unsavable-rooms'),
+      saveDelayMs: 10,
+      saveRetryMs: 20,
+      idleUnloadMs: 30,
+    });
+    storage.calls = 0;
+    storage.error = new RangeError('Invalid string length');
+    try {
+      const client = await join(s.port, 'hugeRoom01', 'secretHugeRoom00001');
+      const shape = { id: 'shape0001', type: 'rect', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, w: 10, h: 10, fill: null };
+      client.ws.send(JSON.stringify({ type: 'mutate', clientSeq: 1, ops: [{ type: 'add', shape }] }));
+      await vi.waitFor(() => expect(storage.calls).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 300)); // 다시 시도(20ms 부터)가 여러 번 돌 시간
+      expect(storage.calls).toBe(1);
+      client.ws.close();
+      await new Promise((resolve) => setTimeout(resolve, 200)); // 내리기(30ms)가 돌 시간
+      const again = await join(s.port, 'hugeRoom01', 'secretHugeRoom00002');
+      expect(again.welcome.epoch).not.toBe(client.welcome.epoch);
+      expect(storage.calls).toBe(1);
+      again.ws.close();
+    } finally {
+      storage.error = null;
+      await s.close(); // 저장하지 못한 채 남은 방이 없으므로 실패하지 않는다
+    }
+  });
 });
