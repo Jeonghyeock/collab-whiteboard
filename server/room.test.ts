@@ -265,8 +265,9 @@ describe('Room', () => {
 });
 
 describe('Room 크기 상한', () => {
-  // 범위(±1e6) 안이지만 JSON 으로 가장 긴 숫자(24자). 좌표 1000개짜리 펜 하나가 약 25KB 다.
-  const longCoord = -1.2345678901234567e-300;
+  // 범위(±1e6) 안에서 JSON 으로 가장 긴 숫자(25자). 좌표 1000개짜리 펜 하나가 약 26KB 다.
+  const longCoord = -0.0000012345678901234567;
+  const longSize = 0.0000012345678901234567; // 0 이상에서 가장 긴 숫자(24자)
   const points = new Array(1000).fill(longCoord);
   const pen = (id: string): Shape => ({ id, type: 'pen', x: 0, y: 0, z: 0, stroke: '#000000', strokeWidth: 2, points });
   const maxBytes = 64 * 1024; // 펜 둘은 들어가고 셋은 넘는다
@@ -316,8 +317,8 @@ describe('Room 크기 상한', () => {
     for (let n = 0; shapes.length < 400; n++) {
       const kind = n % 5;
       const common = { id: id(n), ...base };
-      if (kind === 0) shapes.push({ ...common, type: 'rect', w: 1.2345678901234567e-300, h: 1.2345678901234567e-300, fill: '#ffffffff' });
-      if (kind === 1) shapes.push({ ...common, type: 'ellipse', w: 1.2345678901234567e-300, h: 1.2345678901234567e-300, fill: '#ffffffff' });
+      if (kind === 0) shapes.push({ ...common, type: 'rect', w: longSize, h: longSize, fill: '#ffffffff' });
+      if (kind === 1) shapes.push({ ...common, type: 'ellipse', w: longSize, h: longSize, fill: '#ffffffff' });
       if (kind === 2) shapes.push({ ...common, type: 'line', dx: longCoord, dy: longCoord, arrow: false });
       if (kind === 3) shapes.push({ ...common, type: 'pen', points: [longCoord, longCoord] });
       if (kind === 4) shapes.push({ ...common, type: 'text', text: '\u0001가"\\', fontSize: 8.000000000000002 });

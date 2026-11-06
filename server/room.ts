@@ -39,7 +39,7 @@ function publicIdOf(clientSecret: string): string {
 }
 
 // 방 크기 어림. 도형 하나가 JSON 에서 펜 좌표·글 말고 차지하는 크기(도형 맵의 "id": 와 쉼표 포함)는 id 40자,
-// 숫자마다 가장 긴 표기 24자(예: -1.2345678901234567e-300)로 쳐도 약 330바이트라 넉넉히 400 으로 친다.
+// 숫자마다 범위 안에서 가장 긴 표기 25자(예: -0.0000012345678901234567)로 쳐도 약 330바이트라 넉넉히 400 으로 친다.
 // 크게 커질 수 있는 값은 펜 좌표와 글뿐이라 그 둘만 실제로 잰다. 그래서 어림은 실제 JSON 크기보다 작지 않다.
 const SHAPE_OVERHEAD_BYTES = 400;
 function shapeBytes(shape: Shape): number {
