@@ -159,8 +159,12 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           scheduleUnload(room);
           return;
         }
-        rooms.delete(room.id);
-        saveChains.delete(room.id);
+        // 먼저 걸린 타이머가 이 방을 이미 내렸고 같은 id 로 새 방이 올라와 있으면, 그 방은 지우지 않는다.
+        // 지우면 그 뒤에 들어온 사람이 또 다른 인스턴스를 받아 같은 방이 둘로 갈라진다.
+        if (rooms.get(room.id) === room) {
+          rooms.delete(room.id);
+          saveChains.delete(room.id);
+        }
         saves.delete(room);
       }, idleUnloadMs),
     );
