@@ -7,6 +7,7 @@ export const LIMITS = {
   maxSelection: 500,
   maxMembersPerRoom: 50,
   maxMessageBytes: 1024 * 1024,
+  maxRoomBytes: 16 * 1024 * 1024, // 방 하나의 도형을 JSON 으로 쓴 크기(어림, server/room.ts)의 상한. 근거는 docs/protocol.md 제한값 절
   maxCoord: 1e6, // 좌표·크기의 절댓값 상한 (protocol.ts 스키마와 클라이언트 clampOps 가 함께 쓴다)
   maxZ: 1e9, // 쌓임 순서(z)의 절댓값 상한
 } as const;

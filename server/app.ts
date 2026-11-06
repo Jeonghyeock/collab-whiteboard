@@ -122,6 +122,14 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
         state.retryMs = saveRetryMs;
       })
       .catch((error: unknown) => {
+        // 방을 JSON 으로 만들 수 없는 경우(RangeError: 문자열 최대 길이)는 다시 해도 똑같이 실패한다. 다시 시도하면 그때마다
+        // 큰 직렬화로 이벤트 루프만 멈추고, 저장하지 못한 변경이 남아 방을 내리지도 못한다. 이 변경의 저장은 포기한다.
+        // (방 크기 상한이 있어 정상적으로는 생기지 않는다.)
+        if (error instanceof RangeError) {
+          console.error(`[save] room ${room.id} cannot be serialized, giving up without retrying`, error);
+          state.saved = Math.max(state.saved, version);
+          return;
+        }
         console.error(`[save] room ${room.id} failed`, error);
         // 뒤이어 더 새 저장이 줄에 있지 않으면, 이 변경을 다시 저장할 대상으로 되돌린다.
         if (state.queued === version) state.queued = state.saved;
@@ -305,8 +313,10 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
         }
         clearTimeout(helloTimeout);
         cancelUnload(target);
-        target.join(conn, message);
+        // join 이 던져도(welcome 을 만들지 못하는 등) 연결이 닫힐 때 방을 정리(leave·내리기 예약)하도록 먼저 정한다.
+        // 그러지 않으면 방금 내리기를 취소한 방이 아무도 없이 메모리에 남았다.
         room = target;
+        target.join(conn, message);
         return;
       }
       // hello가 처리되기 전에 온 메시지는 버린다. 클라이언트는 welcome을 받은 뒤에만 변경을 보낸다.
